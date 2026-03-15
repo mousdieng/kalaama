@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist/content",
+    "rootDir": ".",
+    "types": ["chrome"],
+    "module": "ESNext",
+    "target": "ES2022"
+  },
+  "include": ["src/chrome/content/**/*.ts", "src/chrome/shared/**/*.ts"],
+  "exclude": ["node_modules", "src/app", "src/chrome/background"]
+}

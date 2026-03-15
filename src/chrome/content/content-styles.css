@@ -1,0 +1,57 @@
+/**
+ * Kalaama Content Script Styles
+ * Minimal styles for the content script - main styling is in the overlay
+ */
+
+/* Kalaama overlay container */
+.kalaama-overlay-container {
+  position: absolute;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+.kalaama-overlay-container.active {
+  pointer-events: auto;
+}
+
+/* Hide YouTube's default captions when Kalaama is active */
+.kalaama-active .ytp-caption-window-container {
+  opacity: 0.3;
+}
+
+/* Kalaama badge indicator */
+.kalaama-badge {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+  z-index: 2147483646;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.kalaama-badge:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.5);
+}
+
+/* Loading state */
+.kalaama-loading {
+  animation: kalaama-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes kalaama-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
