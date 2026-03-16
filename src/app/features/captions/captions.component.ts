@@ -1,15 +1,22 @@
-import { Component, OnInit, OnDestroy, inject, NgZone } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, NgZone, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MessagingService } from '../../core/services/messaging.service';
-import { SettingsService } from '../../core/services/settings.service';
+import { MessagingService, WordContextResponse } from '../../core/services/messaging.service';
+import { SettingsService, UserSettings } from '../../core/services/settings.service';
 import { VocabularyService } from '../../core/services/vocabulary.service';
+
+interface SubtitleCue {
+  text: string;
+  words?: { word: string; index: number }[];
+  startTime: number;
+  endTime: number;
+}
 
 interface CaptionCue {
   text: string;
   words?: { word: string; index: number }[];
   start: number;
   end: number;
-  translatedText?: string | null;  // From native language track
+  translatedText?: string | null;
 }
 
 interface VideoInfo {
@@ -22,115 +29,7 @@ interface VideoInfo {
   selector: 'app-captions',
   standalone: true,
   imports: [CommonModule],
-  template: `
-    <div class="flex flex-col h-full">
-      <!-- Connection Status -->
-      <div class="px-4 py-2 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2">
-        <span
-          class="w-2 h-2 rounded-full"
-          [class.bg-green-500]="isConnected"
-          [class.bg-slate-400]="!isConnected"
-        ></span>
-        <span class="text-sm text-slate-600 dark:text-slate-400">
-          {{ statusText }}
-        </span>
-      </div>
-
-      <!-- Video Info -->
-      <div *ngIf="videoInfo.title" class="px-4 py-2 bg-slate-100 dark:bg-slate-800">
-        <p class="text-sm font-medium text-slate-700 dark:text-slate-300 truncate">
-          {{ videoInfo.title }}
-        </p>
-        <p class="text-xs text-slate-500 dark:text-slate-400">
-          Language: {{ getLanguageName(videoInfo.language) }}
-        </p>
-      </div>
-
-      <!-- Caption Display -->
-      <div class="flex-1 p-4 overflow-y-auto">
-        <div *ngIf="!currentCue" class="text-center text-slate-500 dark:text-slate-400 py-8">
-          <p *ngIf="isConnected && hasCaptions">No caption at this moment...</p>
-          <p *ngIf="isConnected && !hasCaptions">No captions available for this video</p>
-          <p *ngIf="!isConnected">Open a YouTube video to start learning</p>
-        </div>
-
-        <div *ngIf="currentCue" class="space-y-3">
-          <!-- Original caption -->
-          <div class="text-lg leading-relaxed">
-            <span
-              *ngFor="let wordObj of getWords()"
-              class="cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors px-0.5 rounded"
-              [class.bg-indigo-100]="selectedWord === wordObj.word"
-              [class.dark:bg-indigo-900]="selectedWord === wordObj.word"
-              (click)="onWordClick(wordObj.word)"
-            >
-              {{ wordObj.word }}
-            </span>
-          </div>
-
-          <!-- Caption translation -->
-          <div class="text-base text-slate-500 dark:text-slate-400 italic border-l-2 border-indigo-300 dark:border-indigo-600 pl-3">
-            <span *ngIf="isTranslatingCaption" class="text-slate-400">...</span>
-            <span *ngIf="!isTranslatingCaption && captionTranslation">{{ captionTranslation }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Translation Panel -->
-      <div
-        *ngIf="selectedWord"
-        class="border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 shadow-lg"
-      >
-        <div class="flex justify-between items-start mb-2">
-          <span class="font-semibold text-indigo-600 dark:text-indigo-400">
-            {{ selectedWord }}
-          </span>
-          <button
-            (click)="closeTranslation()"
-            class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-          >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-            </svg>
-          </button>
-        </div>
-
-        <div class="mb-3">
-          <span *ngIf="isTranslating" class="text-slate-500">Translating...</span>
-          <span *ngIf="!isTranslating && translation" class="text-slate-700 dark:text-slate-300">
-            {{ translation }}
-          </span>
-          <span *ngIf="!isTranslating && translationError" class="text-red-500">
-            {{ translationError }}
-          </span>
-        </div>
-
-        <div class="flex gap-2">
-          <button
-            (click)="saveWord()"
-            [disabled]="!translation || isSaving"
-            class="flex-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-          >
-            {{ isSaving ? 'Saving...' : 'Save Word' }}
-          </button>
-          <button
-            (click)="closeTranslation()"
-            class="px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-sm"
-          >
-            Skip
-          </button>
-        </div>
-      </div>
-
-      <!-- Saved Toast -->
-      <div
-        *ngIf="showSavedToast"
-        class="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-green-600 text-white rounded-lg shadow-lg text-sm"
-      >
-        Word saved!
-      </div>
-    </div>
-  `,
+  templateUrl: './captions.component.html',
   styles: [`
     :host {
       display: block;
@@ -140,6 +39,8 @@ interface VideoInfo {
   `]
 })
 export class CaptionsComponent implements OnInit, OnDestroy {
+  @ViewChild('lyricsContainer') lyricsContainer!: ElementRef<HTMLDivElement>;
+
   private messagingService = inject(MessagingService);
   private settingsService = inject(SettingsService);
   private vocabularyService = inject(VocabularyService);
@@ -148,14 +49,20 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   isConnected = false;
   hasCaptions = false;
   statusText = 'Waiting for video...';
-  currentCue: CaptionCue | null = null;
   videoInfo: VideoInfo = { videoId: null, title: null, language: null };
+
+  // Lyrics-style display
+  allCaptions: SubtitleCue[] = [];
+  translatedCaptions: SubtitleCue[] = [];
+  currentCueIndex = -1;
+  currentCue: CaptionCue | null = null;
 
   // Caption translation (full line)
   captionTranslation: string | null = null;
   isTranslatingCaption = false;
   private lastTranslatedText: string | null = null;
 
+  // Word translation
   selectedWord: string | null = null;
   translation: string | null = null;
   translationError: string | null = null;
@@ -163,11 +70,33 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   isSaving = false;
   showSavedToast = false;
 
-  private settings = { targetLanguage: 'es', nativeLanguage: 'en' };
+  // AI word context
+  wordContext: WordContextResponse | null = null;
+  isLoadingContext = false;
 
-  ngOnInit() {
-    // Load settings
-    this.loadSettings();
+  // Settings
+  private settings: UserSettings = {
+    target_language: 'es',
+    native_language: 'en',
+    subtitle_font_size: 18,
+    subtitle_position: 'bottom',
+    auto_pause_on_click: false,
+    auto_pause_after_caption: false,
+    highlight_unknown_words: true,
+    show_pronunciation: true,
+    theme: 'auto'
+  };
+  private settingsLoaded = false;
+  private settingsPromise: Promise<void> | null = null;
+  private videoPausedByUs = false;
+
+  // Auto-scroll (always center current caption)
+
+  async ngOnInit() {
+    // IMPORTANT: Load settings FIRST and wait for them
+    this.settingsPromise = this.loadSettings();
+    await this.settingsPromise;
+    this.settingsLoaded = true;
 
     // Listen for messages from content script via service worker
     this.messagingService.onMessage((message) => {
@@ -193,15 +122,15 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
-    // Cleanup listeners if needed
+    // Cleanup if needed
   }
 
-  private async loadSettings() {
+  private async loadSettings(): Promise<void> {
     try {
-      const settings = await this.settingsService.getSettings();
-      if (settings) {
-        this.settings.targetLanguage = settings.target_language || 'es';
-        this.settings.nativeLanguage = settings.native_language || 'en';
+      const loadedSettings = await this.settingsService.waitForReady();
+      if (loadedSettings) {
+        this.settings = { ...this.settings, ...loadedSettings };
+        console.log('[Captions] Settings loaded:', this.settings);
       }
     } catch (error) {
       console.warn('[Captions] Failed to load settings:', error);
@@ -243,6 +172,9 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     } else {
       this.isConnected = false;
       this.statusText = 'Waiting for video...';
+      this.allCaptions = [];
+      this.translatedCaptions = [];
+      this.currentCueIndex = -1;
       this.currentCue = null;
       this.videoInfo = { videoId: null, title: null, language: null };
     }
@@ -250,8 +182,15 @@ export class CaptionsComponent implements OnInit, OnDestroy {
 
   private handleMessage(message: { type: string; payload?: any }) {
     switch (message.type) {
+      case 'ALL_CAPTIONS':
+        this.handleAllCaptions(message.payload);
+        break;
+      case 'CUE_INDEX_CHANGE':
+        this.handleCueIndexChange(message.payload);
+        break;
       case 'CAPTION_CUE_CHANGE':
-        this.handleCueChange(message.payload);
+        // Legacy support - handle old cue change format
+        this.handleLegacyCueChange(message.payload);
         break;
       case 'VIDEO_INFO':
         this.handleVideoInfo(message.payload);
@@ -262,38 +201,81 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     }
   }
 
-  private handleCueChange(cue: CaptionCue | null) {
-    this.currentCue = cue;
+  private handleAllCaptions(payload: { captions: SubtitleCue[]; translatedCaptions: SubtitleCue[] }) {
+    this.allCaptions = payload.captions || [];
+    this.translatedCaptions = payload.translatedCaptions || [];
+    this.hasCaptions = this.allCaptions.length > 0;
 
+    // Scroll to current cue after DOM updates
+    if (this.currentCueIndex >= 0) {
+      setTimeout(() => this.scrollToCurrentCue(), 0);
+    }
+  }
+
+  private handleCueIndexChange(payload: { currentIndex: number; cue: CaptionCue | null; translatedText?: string | null }) {
+    const prevIndex = this.currentCueIndex;
+    this.currentCueIndex = payload.currentIndex;
+    this.currentCue = payload.cue;
+
+    // Handle auto-pause after caption (when moving to a NEW caption, not -1)
+    if (this.settings.auto_pause_after_caption &&
+        prevIndex >= 0 &&
+        payload.currentIndex >= 0 &&
+        prevIndex !== payload.currentIndex) {
+      this.messagingService.pauseVideo().catch(() => {});
+    }
+
+    // ALWAYS center the current caption in view
+    if (this.currentCueIndex >= 0) {
+      this.scrollToCurrentCue();
+    }
+
+    // Handle caption translation
+    if (payload.cue) {
+      if (payload.translatedText) {
+        this.captionTranslation = payload.translatedText;
+        this.lastTranslatedText = payload.cue.text;
+        this.isTranslatingCaption = false;
+      } else if (payload.cue.text !== this.lastTranslatedText) {
+        this.translateCaption(payload.cue.text);
+      }
+    } else {
+      this.captionTranslation = null;
+      this.lastTranslatedText = null;
+    }
+  }
+
+  private handleLegacyCueChange(cue: CaptionCue | null) {
+    this.currentCue = cue;
     if (!cue) {
       this.captionTranslation = null;
       this.lastTranslatedText = null;
       return;
     }
 
-    // Use native track translation if available (instant, no API)
     if (cue.translatedText) {
       this.captionTranslation = cue.translatedText;
       this.lastTranslatedText = cue.text;
       this.isTranslatingCaption = false;
-    }
-    // Fall back to API translation if no native track
-    else if (cue.text !== this.lastTranslatedText) {
+    } else if (cue.text !== this.lastTranslatedText) {
       this.translateCaption(cue.text);
     }
   }
 
   private async translateCaption(text: string) {
+    if (!this.settingsLoaded && this.settingsPromise) {
+      await this.settingsPromise;
+    }
+
     this.lastTranslatedText = text;
     this.isTranslatingCaption = true;
 
     try {
       const result = await this.messagingService.translateWord(
         text,
-        this.settings.targetLanguage,
-        this.settings.nativeLanguage
+        this.settings.target_language,
+        this.settings.native_language
       );
-      // Only update if this is still the current text
       if (this.lastTranslatedText === text) {
         this.captionTranslation = result.translation;
       }
@@ -319,31 +301,112 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     }
   }
 
-  getWords(): { word: string; index: number }[] {
-    if (!this.currentCue) return [];
-    if (this.currentCue.words) return this.currentCue.words;
-    return this.currentCue.text.split(/\s+/).map((word, index) => ({ word, index }));
+  // Parse text into word objects
+  parseWords(text: string): { word: string; index: number }[] {
+    if (!text) return [];
+    return text.split(/\s+/).map((word, index) => ({ word, index }));
   }
 
-  async onWordClick(word: string) {
-    // Clean the word
+  // Navigation methods
+  goToPreviousCue(event: Event) {
+    event.stopPropagation();
+    if (this.currentCueIndex > 0) {
+      const prev = this.allCaptions[this.currentCueIndex - 1];
+      this.seekToCue(prev.startTime);
+    }
+  }
+
+  replayCurrentCue(event: Event) {
+    event.stopPropagation();
+    if (this.currentCueIndex >= 0 && this.currentCueIndex < this.allCaptions.length) {
+      const current = this.allCaptions[this.currentCueIndex];
+      this.seekToCue(current.startTime);
+    }
+  }
+
+  goToNextCue(event: Event) {
+    event.stopPropagation();
+    if (this.currentCueIndex < this.allCaptions.length - 1) {
+      const next = this.allCaptions[this.currentCueIndex + 1];
+      this.seekToCue(next.startTime);
+    }
+  }
+
+  async seekToCue(time: number) {
+    try {
+      await this.messagingService.seekToTime(time);
+    } catch (error) {
+      console.warn('[Captions] Failed to seek:', error);
+    }
+  }
+
+  // Scroll to current caption - always centers it
+  private scrollToCurrentCue(): void {
+    if (!this.lyricsContainer?.nativeElement || this.currentCueIndex < 0) return;
+
+    const activeEl = this.lyricsContainer.nativeElement.querySelector(
+      `[data-index="${this.currentCueIndex}"]`
+    );
+
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  // Word click handler
+  async onWordClick(word: string, event?: Event) {
+    if (event) {
+      event.stopPropagation();
+    }
+
     const cleanWord = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     if (!cleanWord) return;
+
+    if (!this.settingsLoaded && this.settingsPromise) {
+      await this.settingsPromise;
+    }
+
+    // Pause video when clicking on a word
+    try {
+      await this.messagingService.pauseVideo();
+      this.videoPausedByUs = true;
+    } catch (error) {
+      console.warn('[Captions] Could not pause video:', error);
+    }
 
     this.selectedWord = cleanWord;
     this.translation = null;
     this.translationError = null;
+    this.wordContext = null;
     this.isTranslating = true;
+    this.isLoadingContext = true;
 
+    // Try to get AI context first (includes translation)
     try {
-      const result = await this.messagingService.translateWord(
+      const context = await this.messagingService.getWordContext(
         cleanWord,
-        this.settings.targetLanguage,
-        this.settings.nativeLanguage
+        this.currentCue?.text || '',
+        this.settings.target_language,
+        this.settings.native_language
       );
-      this.translation = result.translation;
+      console.log('[Captions] Received word context:', context);
+      this.wordContext = context;
+      this.translation = context.translation;
+      this.isLoadingContext = false;
     } catch (error: any) {
-      this.translationError = error.message || 'Translation failed';
+      console.warn('[Captions] AI context failed, using basic translation:', error);
+      this.isLoadingContext = false;
+      // Fall back to basic translation
+      try {
+        const result = await this.messagingService.translateWord(
+          cleanWord,
+          this.settings.target_language,
+          this.settings.native_language
+        );
+        this.translation = result.translation;
+      } catch (translateError: any) {
+        this.translationError = translateError.message || 'Translation failed';
+      }
     } finally {
       this.isTranslating = false;
     }
@@ -357,7 +420,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       await this.vocabularyService.addWord({
         word: this.selectedWord,
         translation: this.translation,
-        language: this.settings.targetLanguage,
+        language: this.settings.target_language,
         context_sentence: this.currentCue?.text || '',
         video_id: this.videoInfo.videoId || undefined,
         video_title: this.videoInfo.title || undefined
@@ -374,9 +437,16 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   }
 
   closeTranslation() {
+    // Resume video if we paused it
+    if (this.videoPausedByUs) {
+      this.messagingService.playVideo().catch(() => {});
+      this.videoPausedByUs = false;
+    }
+
     this.selectedWord = null;
     this.translation = null;
     this.translationError = null;
+    this.wordContext = null;
   }
 
   getLanguageName(code: string | null): string {
