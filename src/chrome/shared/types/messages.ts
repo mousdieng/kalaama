@@ -18,7 +18,12 @@ export type MessageType =
   | 'AUTH_STATE_CHANGED'
   | 'OVERLAY_READY'
   | 'VIDEO_CHANGED'
-  | 'CUE_CHANGE';
+  | 'CUE_CHANGE'
+  | 'VIDEO_CONTROL'
+  | 'GET_WORD_CONTEXT'
+  | 'ALL_CAPTIONS'
+  | 'CUE_INDEX_CHANGE'
+  | 'SEEK_TO_CUE';
 
 export interface Message<T = unknown> {
   type: MessageType;
@@ -94,4 +99,41 @@ export interface MessageResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+}
+
+// Video control payload
+export interface VideoControlPayload {
+  action: 'pause' | 'play' | 'toggle';
+}
+
+// AI word context payloads
+export interface WordContextPayload {
+  word: string;
+  sentence: string;
+  targetLanguage: string;
+  nativeLanguage: string;
+}
+
+export interface WordContextResponse {
+  definition: string;
+  partOfSpeech: string;
+  examples: string[];
+  pronunciation?: string;
+  translation: string;
+}
+
+// Lyrics-style caption payloads
+export interface AllCaptionsPayload {
+  captions: SubtitleCue[];
+  translatedCaptions: SubtitleCue[];
+}
+
+export interface CueIndexChangePayload {
+  currentIndex: number;
+  cue: SubtitleCue | null;
+  translatedText?: string | null;
+}
+
+export interface SeekToCuePayload {
+  time: number;
 }

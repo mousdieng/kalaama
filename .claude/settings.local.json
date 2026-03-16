@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "mcp__chrome-devtools__list_pages",
+      "mcp__chrome-devtools__list_console_messages",
+      "mcp__chrome-devtools__evaluate_script",
+      "Bash(npm run copy:assets:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nRefactor captions component with lyrics-style display\n\n- Extract template to separate captions.component.html\n- Add lyrics-style caption display with all captions visible\n- Implement auto-scroll to center current caption\n- Add word context/AI translation with pronunciation and examples\n- Add navigation methods \\(previous/replay/next cue\\)\n- Auto-pause video on word click, resume on close\n- Support auto_pause_after_caption setting\n- Improve settings handling with async loading\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push)"
+    ]
+  }
+}

@@ -2,12 +2,13 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterOutlet, Router } from '@angular/router';
 import { HeaderComponent } from './shared/components/header/header.component';
+import { BottomNavComponent } from './shared/components/bottom-nav/bottom-nav.component';
 import { AuthService } from './core/services/auth.service';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet, HeaderComponent],
+  imports: [CommonModule, RouterOutlet, HeaderComponent, BottomNavComponent],
   template: `
     <div class="flex flex-col h-full bg-slate-50 dark:bg-slate-900">
       <app-header
@@ -16,9 +17,11 @@ import { AuthService } from './core/services/auth.service';
         (onLogout)="logout()"
       />
 
-      <main class="flex-1 overflow-y-auto">
+      <main class="flex-1 overflow-y-auto pb-16">
         <router-outlet />
       </main>
+
+      <app-bottom-nav />
     </div>
   `,
   styles: [`

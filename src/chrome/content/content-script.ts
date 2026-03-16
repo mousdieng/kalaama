@@ -208,19 +208,35 @@ class KalaamaContentScript {
       const video = document.querySelector('video.html5-main-video') as HTMLVideoElement;
       if (video) {
         this.videoSync = new VideoSyncService(video, this.subtitles);
-        this.videoSync.onCueChange((cue) => {
-          // Find matching translated cue
+        this.videoSync.onCueChange((cue, cueIndex) => {
+          // Find matching translated cue using multiple strategies
           let translatedText: string | null = null;
           if (cue && this.translatedSubtitles.length > 0) {
-            const translatedCue = this.findMatchingCue(cue.startTime, this.translatedSubtitles);
+            const translatedCue = this.findMatchingCue(cue.startTime, this.translatedSubtitles, {
+              currentIndex: cueIndex,
+              tolerance: 0.5 // 500ms tolerance for fuzzy matching
+            });
             translatedText = translatedCue?.text || null;
           }
 
-          // Send cue to side panel via service worker
+          // Send cue index change to side panel (for lyrics-style display)
           this.sendToSidePanel({
-            type: 'CAPTION_CUE_CHANGE',
-            payload: cue ? { ...cue, translatedText } : null
+            type: 'CUE_INDEX_CHANGE',
+            payload: {
+              currentIndex: cueIndex,
+              cue: cue ? { ...cue, translatedText } : null,
+              translatedText
+            }
           });
+        });
+
+        // Send all captions after setup (for lyrics-style display)
+        this.sendToSidePanel({
+          type: 'ALL_CAPTIONS',
+          payload: {
+            captions: this.subtitles,
+            translatedCaptions: this.translatedSubtitles
+          }
         });
       }
     } catch (error) {
@@ -228,8 +244,39 @@ class KalaamaContentScript {
     }
   }
 
-  private findMatchingCue(time: number, subtitles: ParsedSubtitle[]): ParsedSubtitle | null {
-    // Binary search for efficiency
+  /**
+   * Find matching cue using multiple strategies:
+   * 1. Exact time match (binary search)
+   * 2. Index-based match (same position in translated track)
+   * 3. Fuzzy time match (nearest within tolerance)
+   */
+  private findMatchingCue(
+    time: number,
+    subtitles: ParsedSubtitle[],
+    options?: { currentIndex?: number; tolerance?: number }
+  ): ParsedSubtitle | null {
+    if (subtitles.length === 0) return null;
+
+    // Strategy 1: Exact time match (binary search)
+    const exactMatch = this.exactTimeMatch(time, subtitles);
+    if (exactMatch) return exactMatch;
+
+    // Strategy 2: Index-based match (useful when tracks have same structure)
+    const currentIndex = options?.currentIndex;
+    if (currentIndex !== undefined && currentIndex >= 0 && currentIndex < subtitles.length) {
+      const indexCue = subtitles[currentIndex];
+      // Accept if reasonably close in time (within 2 seconds)
+      if (Math.abs(indexCue.startTime - time) < 2.0) {
+        return indexCue;
+      }
+    }
+
+    // Strategy 3: Fuzzy time match (find nearest within tolerance)
+    const tolerance = options?.tolerance ?? 0.5; // 500ms default
+    return this.fuzzyTimeMatch(time, subtitles, tolerance);
+  }
+
+  private exactTimeMatch(time: number, subtitles: ParsedSubtitle[]): ParsedSubtitle | null {
     let low = 0;
     let high = subtitles.length - 1;
 
@@ -247,6 +294,31 @@ class KalaamaContentScript {
     }
 
     return null;
+  }
+
+  private fuzzyTimeMatch(time: number, subtitles: ParsedSubtitle[], tolerance: number): ParsedSubtitle | null {
+    let bestMatch: ParsedSubtitle | null = null;
+    let bestDistance = Infinity;
+
+    for (const cue of subtitles) {
+      // Check if time is within cue range (with tolerance)
+      const startDistance = Math.abs(cue.startTime - time);
+      const endDistance = Math.abs(cue.endTime - time);
+      const minDistance = Math.min(startDistance, endDistance);
+
+      // If time is within the cue range, distance is 0
+      const distance = (time >= cue.startTime && time <= cue.endTime) ? 0 : minDistance;
+
+      if (distance < bestDistance && distance <= tolerance) {
+        bestDistance = distance;
+        bestMatch = cue;
+      }
+
+      // Early exit if we've passed the time window
+      if (cue.startTime > time + tolerance) break;
+    }
+
+    return bestMatch;
   }
 
   /**
@@ -281,13 +353,6 @@ class KalaamaContentScript {
 
       case 'GET_CURRENT_CAPTION':
         // Send current state to side panel
-        if (this.videoSync) {
-          const currentCue = this.videoSync.getCurrentCue();
-          this.sendToSidePanel({
-            type: 'CAPTION_CUE_CHANGE',
-            payload: currentCue
-          });
-        }
         this.sendToSidePanel({
           type: 'VIDEO_INFO',
           payload: {
@@ -303,7 +368,40 @@ class KalaamaContentScript {
             hasCaptions: this.subtitles.length > 0
           }
         });
+        // Send ALL captions for lyrics-style display
+        if (this.subtitles.length > 0) {
+          this.sendToSidePanel({
+            type: 'ALL_CAPTIONS',
+            payload: {
+              captions: this.subtitles,
+              translatedCaptions: this.translatedSubtitles
+            }
+          });
+        }
+        // Send current cue index
+        if (this.videoSync) {
+          const currentCue = this.videoSync.getCurrentCue();
+          const currentIndex = this.videoSync.getCurrentCueIndex();
+          this.sendToSidePanel({
+            type: 'CUE_INDEX_CHANGE',
+            payload: {
+              currentIndex,
+              cue: currentCue,
+              translatedText: null
+            }
+          });
+        }
         sendResponse({ received: true });
+        break;
+
+      case 'VIDEO_CONTROL':
+        this.handleVideoControl(message.payload as { action: 'pause' | 'play' | 'toggle' });
+        sendResponse({ success: true });
+        break;
+
+      case 'SEEK_TO_CUE':
+        this.handleSeekToCue(message.payload as { time: number });
+        sendResponse({ success: true });
         break;
 
       default:
@@ -311,6 +409,45 @@ class KalaamaContentScript {
     }
 
     return true;
+  }
+
+  private handleVideoControl(payload: { action: 'pause' | 'play' | 'toggle' }): void {
+    const video = document.querySelector('video.html5-main-video') as HTMLVideoElement;
+    if (!video) {
+      console.warn('[Kalaama] No video element found for control');
+      return;
+    }
+
+    switch (payload.action) {
+      case 'pause':
+        video.pause();
+        console.log('[Kalaama] Video paused');
+        break;
+      case 'play':
+        video.play();
+        console.log('[Kalaama] Video resumed');
+        break;
+      case 'toggle':
+        if (video.paused) {
+          video.play();
+        } else {
+          video.pause();
+        }
+        break;
+    }
+  }
+
+  private handleSeekToCue(payload: { time: number }): void {
+    const video = document.querySelector('video.html5-main-video') as HTMLVideoElement;
+    if (!video) {
+      console.warn('[Kalaama] No video element found for seek');
+      return;
+    }
+
+    if (payload.time !== undefined && payload.time >= 0) {
+      video.currentTime = payload.time;
+      console.log('[Kalaama] Video seeked to:', payload.time);
+    }
   }
 
   private getVideoId(): string | null {

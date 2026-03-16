@@ -15,7 +15,7 @@
 // const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // =============================================================================
 
-import type { Message, SaveWordPayload, TranslateWordPayload, FetchCaptionsPayload } from '../shared/types/messages';
+import type { Message, SaveWordPayload, TranslateWordPayload, FetchCaptionsPayload, VideoControlPayload, WordContextPayload, WordContextResponse, SeekToCuePayload } from '../shared/types/messages';
 
 const MYMEMORY_EMAIL = 'kalaama@example.com';
 
@@ -69,9 +69,20 @@ async function handleMessage(
     case 'CAPTION_CUE_CHANGE':
     case 'VIDEO_INFO':
     case 'CAPTION_STATUS':
+    case 'ALL_CAPTIONS':
+    case 'CUE_INDEX_CHANGE':
       // Forward to side panel
       await sendToSidePanel(message);
       return { forwarded: true };
+
+    // Video control - forward to content script
+    case 'VIDEO_CONTROL':
+    case 'SEEK_TO_CUE':
+      return forwardToContentScript(message);
+
+    // AI word context
+    case 'GET_WORD_CONTEXT':
+      return getWordContext(message.payload as WordContextPayload);
 
     default:
       console.warn('[Kalaama] Unknown message type:', message.type);
@@ -368,6 +379,7 @@ function getDefaultSettings() {
     subtitle_font_size: 18,
     subtitle_position: 'bottom',
     auto_pause_on_click: false,
+    auto_pause_after_caption: false,
     highlight_unknown_words: true,
     show_pronunciation: true,
     theme: 'auto',
@@ -407,6 +419,169 @@ async function sendToSidePanel(message: unknown): Promise<void> {
   } catch (error) {
     // Side panel might not be open
     console.debug('[Kalaama] Could not send to side panel:', error);
+  }
+}
+
+/**
+ * Forward message to content script in active tab
+ */
+async function forwardToContentScript(message: Message): Promise<unknown> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      throw new Error('No active tab found');
+    }
+
+    return new Promise((resolve, reject) => {
+      chrome.tabs.sendMessage(tab.id!, message, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('[Kalaama] Failed to forward to content script:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get AI word context using Google Gemini API
+ */
+async function getWordContext(payload: WordContextPayload): Promise<WordContextResponse> {
+  const { word, sentence, targetLanguage, nativeLanguage } = payload;
+
+  // Get API key from storage
+  const { gemini_api_key } = await chrome.storage.local.get('gemini_api_key');
+
+  // If no API key, fall back to basic translation
+  if (!gemini_api_key) {
+    console.log('[Kalaama] No Gemini API key, using basic translation');
+    const translation = await translateWord({
+      word,
+      fromLang: targetLanguage,
+      toLang: nativeLanguage
+    });
+    return {
+      definition: '',
+      partOfSpeech: '',
+      examples: [],
+      translation: translation.translation
+    };
+  }
+
+  try {
+    const languageNames: Record<string, string> = {
+      en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+      it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+      ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+    };
+
+    const targetLangName = languageNames[targetLanguage] || targetLanguage;
+    const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+    const prompt = `For the ${targetLangName} word "${word}" appearing in the sentence "${sentence}", provide:
+1. Definition in ${nativeLangName}
+2. Part of speech (noun, verb, adjective, adverb, etc.)
+3. 2-3 example sentences using this word with ${nativeLangName} translations
+4. Pronunciation guide (phonetic) if applicable
+5. Translation to ${nativeLangName}
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "definition": "the definition here",
+  "partOfSpeech": "noun/verb/etc",
+  "examples": ["example 1 - translation 1", "example 2 - translation 2"],
+  "pronunciation": "/pronunciation/",
+  "translation": "word translation"
+}`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_api_key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3 }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gemini API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!textContent) {
+      console.error('[Kalaama] No text content from Gemini');
+      throw new Error('No response from Gemini');
+    }
+
+    console.log('[Kalaama] Gemini raw response:', textContent);
+
+    // Extract JSON from response (handle markdown code blocks)
+    let jsonStr = textContent.trim();
+
+    // Try different patterns to extract JSON
+    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    console.log('[Kalaama] Extracted JSON string:', jsonStr);
+
+    let result;
+    try {
+      result = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error('[Kalaama] Failed to parse JSON:', parseError);
+      // Try to extract info manually if JSON parsing fails
+      const basicTranslation = await translateWord({
+        word,
+        fromLang: targetLanguage,
+        toLang: nativeLanguage
+      });
+      return {
+        definition: textContent.substring(0, 200), // Use raw text as definition
+        partOfSpeech: '',
+        examples: [],
+        pronunciation: '',
+        translation: basicTranslation.translation
+      };
+    }
+
+    // Ensure all required fields exist with defaults
+    const wordContextResult: WordContextResponse = {
+      definition: result.definition || '',
+      partOfSpeech: result.partOfSpeech || result.part_of_speech || '',
+      examples: Array.isArray(result.examples) ? result.examples : [],
+      pronunciation: result.pronunciation || '',
+      translation: result.translation || word
+    };
+
+    console.log('[Kalaama] Gemini word context result:', wordContextResult);
+    return wordContextResult;
+  } catch (error) {
+    console.error('[Kalaama] Gemini API failed:', error);
+    // Fall back to basic translation
+    const translation = await translateWord({
+      word,
+      fromLang: targetLanguage,
+      toLang: nativeLanguage
+    });
+    return {
+      definition: '',
+      partOfSpeech: '',
+      examples: [],
+      translation: translation.translation
+    };
   }
 }
 

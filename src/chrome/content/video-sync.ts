@@ -6,7 +6,7 @@
 import type { ParsedSubtitle } from './subtitle-parser';
 export type { ParsedSubtitle };
 
-type CueChangeCallback = (cue: ParsedSubtitle | null) => void;
+type CueChangeCallback = (cue: ParsedSubtitle | null, index: number) => void;
 
 export class VideoSyncService {
   private video: HTMLVideoElement;
@@ -38,6 +38,13 @@ export class VideoSyncService {
       return this.subtitles[this.currentCueIndex];
     }
     return null;
+  }
+
+  /**
+   * Get the current cue index (-1 if no cue active)
+   */
+  getCurrentCueIndex(): number {
+    return this.currentCueIndex;
   }
 
   /**
@@ -137,7 +144,7 @@ export class VideoSyncService {
   private emitCueChange(cue: ParsedSubtitle | null): void {
     for (const callback of this.callbacks) {
       try {
-        callback(cue);
+        callback(cue, this.currentCueIndex);
       } catch (error) {
         console.error('[Kalaama] Cue change callback error:', error);
       }
