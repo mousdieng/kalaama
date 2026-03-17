@@ -23,7 +23,17 @@ export type MessageType =
   | 'GET_WORD_CONTEXT'
   | 'ALL_CAPTIONS'
   | 'CUE_INDEX_CHANGE'
-  | 'SEEK_TO_CUE';
+  | 'SEEK_TO_CUE'
+  // Learning feature messages
+  | 'GET_LEARNING_PATH'
+  | 'GET_LESSON'
+  | 'START_LESSON'
+  | 'SUBMIT_VOICE_RESPONSE'
+  | 'GET_AI_TUTOR_RESPONSE'
+  | 'TEXT_TO_SPEECH'
+  | 'SAVE_LESSON_PROGRESS'
+  | 'GET_USER_PROGRESS'
+  | 'UPDATE_USER_PROGRESS';
 
 export interface Message<T = unknown> {
   type: MessageType;
@@ -136,4 +146,257 @@ export interface CueIndexChangePayload {
 
 export interface SeekToCuePayload {
   time: number;
+}
+
+// ============================================
+// Learning Feature Types
+// ============================================
+
+// Curriculum types
+export interface Unit {
+  id: string;
+  title: string;
+  description: string;
+  lessons: Lesson[];
+  requiredXP: number;
+  icon?: string;
+}
+
+export interface Lesson {
+  id: string;
+  unitId: string;
+  title: string;
+  description: string;
+  type: 'conversation' | 'pronunciation' | 'vocabulary' | 'listening';
+  prompts: LessonPrompt[];
+  xpReward: number;
+  estimatedMinutes: number;
+}
+
+export interface LessonPrompt {
+  id: string;
+  instruction: string;
+  targetPhrase?: string;
+  expectedResponses?: string[];
+  aiContext: string;
+  hints?: string[];
+  audioUrl?: string;
+}
+
+// User progress types
+export interface UserProgress {
+  totalXP: number;
+  currentStreak: number;
+  longestStreak: number;
+  lastPracticeDate: string;
+  completedLessons: Record<string, LessonProgress>;
+  unlockedUnits: string[];
+  currentLanguage: string;
+}
+
+export interface LessonProgress {
+  lessonId: string;
+  completed: boolean;
+  score: number;
+  bestScore: number;
+  attempts: number;
+  completedAt?: string;
+  timeSpentSeconds: number;
+}
+
+// Learning path payload types
+export interface GetLearningPathPayload {
+  language: string;
+}
+
+export interface GetLessonPayload {
+  lessonId: string;
+  language: string;
+}
+
+export interface StartLessonPayload {
+  lessonId: string;
+  language: string;
+}
+
+export interface SubmitVoiceResponsePayload {
+  lessonId: string;
+  promptId: string;
+  userResponse: string;
+  language: string;
+}
+
+// AI Tutor types
+export interface AITutorPayload {
+  userResponse: string;
+  lessonContext: string;
+  currentPrompt: LessonPrompt;
+  language: string;
+  nativeLanguage: string;
+  conversationHistory?: ConversationTurn[];
+}
+
+export interface ConversationTurn {
+  role: 'user' | 'tutor';
+  text: string;
+  timestamp: number;
+}
+
+export interface AITutorResponse {
+  text: string;
+  isCorrect: boolean;
+  correction?: string;
+  pronunciation?: string;
+  encouragement: string;
+  shouldAdvance: boolean;
+  xpEarned?: number;
+}
+
+// Text-to-Speech types
+export interface TTSPayload {
+  text: string;
+  language: string;
+  voiceId?: string;
+  speed?: number;
+}
+
+export interface TTSResponse {
+  audioData: string; // base64 encoded audio
+  duration: number;
+}
+
+// Progress update types
+export interface SaveLessonProgressPayload {
+  lessonId: string;
+  score: number;
+  completed: boolean;
+  timeSpentSeconds: number;
+}
+
+export interface UpdateUserProgressPayload {
+  xpToAdd?: number;
+  lessonCompleted?: string;
+  updateStreak?: boolean;
+}
+
+// Learning path response types
+export interface LearningPathResponse {
+  units: Unit[];
+  userProgress: UserProgress;
+}
+
+export interface LessonResponse {
+  lesson: Lesson;
+  progress?: LessonProgress;
+}
+
+// AI Provider type
+export type AIProvider = 'gemini' | 'openai' | 'claude';
+
+// ============================================
+// Conversation-Based Learning Types
+// ============================================
+
+/**
+ * A themed conversation unit with vocabulary and roleplay
+ */
+export interface ConversationUnit {
+  id: string;
+  title: string;                    // "Im Restaurant"
+  titleNative: string;              // "Au restaurant" (in native language)
+  theme: string;                    // Theme description
+  icon?: string;                    // Emoji or icon
+  vocabulary: VocabularyItem[];     // Words to learn
+  phrasePatterns: PhrasePattern[];  // Sentence structures
+  roleplayScenario: RoleplayConfig; // For roleplay phase
+  requiredXP: number;               // XP needed to unlock
+  xpReward: number;                 // XP earned on completion
+}
+
+/**
+ * A vocabulary item with translation and example
+ */
+export interface VocabularyItem {
+  id: string;
+  word: string;            // "die Speisekarte"
+  translation: string;     // "le menu" (in native language)
+  pronunciation?: string;  // IPA or phonetic hint
+  exampleSentence: string; // Example usage
+  audioUrl?: string;       // Pre-recorded pronunciation URL
+}
+
+/**
+ * A phrase pattern for constructing sentences
+ */
+export interface PhrasePattern {
+  id: string;
+  pattern: string;         // "Kann ich ___ haben?"
+  translation: string;     // "Puis-je avoir ___ ?"
+  vocabSlots: string[];    // Vocab IDs that fit in the blank
+  hint?: string;           // Extra hint for the user
+}
+
+/**
+ * Configuration for the roleplay conversation phase
+ */
+export interface RoleplayConfig {
+  aiCharacter: string;       // "Serveur allemand"
+  scenario: string;          // Full scenario description for AI
+  openingLine: string;       // AI's first message in target language
+  targetVocabUsage: number;  // End when X% of vocab used (e.g., 80)
+  maxTurns?: number;         // Optional max conversation turns
+}
+
+/**
+ * Current state of a conversation lesson
+ */
+export interface ConversationState {
+  unitId: string;
+  phase: ConversationPhase;
+  currentVocabIndex: number;
+  vocabMastered: string[];      // IDs of learned words
+  phrasesCompleted: string[];   // IDs of completed phrases
+  conversationTurns: number;
+  vocabCoveragePercent: number;
+  startTime: number;
+}
+
+export type ConversationPhase = 'loading' | 'vocabulary' | 'phrases' | 'roleplay' | 'complete' | 'error';
+
+/**
+ * Payload for conversation-based AI tutor requests
+ */
+export interface ConversationTutorPayload {
+  phase: ConversationPhase;
+  unit: ConversationUnit;
+  userResponse: string;
+  currentVocab?: VocabularyItem;
+  currentPhrase?: PhrasePattern;
+  vocabMastered: string[];
+  conversationHistory: ConversationTurn[];
+  targetLanguage: string;      // 'de' for German
+  nativeLanguage: string;      // 'fr' for French
+}
+
+/**
+ * Response from conversation AI tutor
+ */
+export interface ConversationTutorResponse {
+  text: string;                // AI response text
+  textInTargetLanguage?: string; // For roleplay, the German part
+  isCorrect: boolean;          // Did user respond correctly
+  correction?: string;         // Correct form if wrong
+  encouragement: string;       // Feedback message
+  shouldAdvance: boolean;      // Move to next vocab/phrase
+  shouldEndPhase: boolean;     // End current phase
+  vocabUsed?: string[];        // Vocab IDs used in this turn
+}
+
+/**
+ * Payload for getting a conversation unit
+ */
+export interface GetConversationUnitPayload {
+  unitId: string;
+  targetLanguage: string;
+  nativeLanguage: string;
 }

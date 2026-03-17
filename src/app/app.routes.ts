@@ -30,6 +30,20 @@ export const routes: Routes = [
       ),
   },
   {
+    path: 'learn',
+    loadComponent: () =>
+      import('./features/learn/learn.component').then(
+        (m) => m.LearnComponent
+      ),
+  },
+  {
+    path: 'learn/lesson/:id',
+    loadComponent: () =>
+      import('./features/learn/lesson/lesson.component').then(
+        (m) => m.LessonComponent
+      ),
+  },
+  {
     path: 'login',
     loadComponent: () =>
       import('./features/auth/login/login.component').then(

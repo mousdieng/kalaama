@@ -8,6 +8,52 @@ import { extractCaptions, fetchCaptionContent, type CaptionTrack } from './subti
 import { parseSubtitles } from './subtitle-parser';
 import { VideoSyncService, type ParsedSubtitle } from './video-sync';
 
+// Voice Recognition types
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionResultList {
+  length: number;
+  [index: number]: SpeechRecognitionResult;
+}
+
+interface SpeechRecognitionResult {
+  isFinal: boolean;
+  [index: number]: SpeechRecognitionAlternative;
+}
+
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition;
+    webkitSpeechRecognition: new () => SpeechRecognition;
+  }
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
 class KalaamaContentScript {
   private videoSync: VideoSyncService | null = null;
   private subtitles: ParsedSubtitle[] = [];
@@ -16,6 +62,18 @@ class KalaamaContentScript {
   private currentLanguage: string | null = null;
   private nativeLanguage: string = 'en';
   private availableTracks: CaptionTrack[] = [];
+
+  // Voice recognition
+  private recognition: SpeechRecognition | null = null;
+  private isListening = false;
+  private voiceLanguage = 'de-DE';
+
+  // Language code mapping
+  private languageMap: Record<string, string> = {
+    en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
+    it: 'it-IT', pt: 'pt-PT', ru: 'ru-RU', zh: 'zh-CN',
+    ja: 'ja-JP', ko: 'ko-KR', ar: 'ar-SA', wo: 'wo-SN',
+  };
 
   constructor() {
     this.init();
@@ -26,6 +84,9 @@ class KalaamaContentScript {
 
     // Load user settings
     await this.loadSettings();
+
+    // Initialize voice recognition
+    this.initVoiceRecognition();
 
     // Wait for YouTube player to be ready
     await this.waitForPlayer();
@@ -38,6 +99,129 @@ class KalaamaContentScript {
 
     // Initial video detection
     this.onVideoChange();
+  }
+
+  private initVoiceRecognition(): void {
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
+      console.warn('[Kalaama] Speech Recognition not supported in this browser');
+      return;
+    }
+
+    this.recognition = new SpeechRecognitionAPI();
+    this.recognition.continuous = false;
+    this.recognition.interimResults = true;
+    this.recognition.maxAlternatives = 1;
+    console.log('[Kalaama] Voice recognition initialized');
+  }
+
+  private startVoiceRecognition(language: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (!this.recognition) {
+        reject(new Error('Speech recognition not supported'));
+        return;
+      }
+
+      if (this.isListening) {
+        reject(new Error('Already listening'));
+        return;
+      }
+
+      this.voiceLanguage = this.languageMap[language] || language;
+      this.recognition.lang = this.voiceLanguage;
+
+      let finalTranscript = '';
+      let timeoutId: ReturnType<typeof setTimeout>;
+
+      this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) {
+            finalTranscript += result[0].transcript;
+          } else {
+            interimTranscript += result[0].transcript;
+          }
+        }
+        console.log('[Kalaama] Voice interim:', interimTranscript, 'final:', finalTranscript);
+
+        // Send interim results to side panel
+        this.sendToSidePanel({
+          type: 'VOICE_INTERIM',
+          payload: { interim: interimTranscript, final: finalTranscript }
+        });
+      };
+
+      this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        console.error('[Kalaama] Voice error:', event.error);
+        this.isListening = false;
+        clearTimeout(timeoutId);
+
+        if (event.error === 'no-speech') {
+          reject(new Error('no-speech'));
+        } else if (event.error === 'not-allowed') {
+          reject(new Error('Microphone access denied'));
+        } else {
+          reject(new Error(event.error));
+        }
+      };
+
+      this.recognition.onend = () => {
+        console.log('[Kalaama] Voice recognition ended, transcript:', finalTranscript);
+        this.isListening = false;
+        clearTimeout(timeoutId);
+
+        if (finalTranscript.trim()) {
+          resolve(finalTranscript.trim());
+        } else {
+          reject(new Error('no-speech'));
+        }
+      };
+
+      this.recognition.onstart = () => {
+        console.log('[Kalaama] Voice recognition started');
+        this.isListening = true;
+      };
+
+      // Auto-stop after 10 seconds
+      timeoutId = setTimeout(() => {
+        if (this.isListening) {
+          console.log('[Kalaama] Voice timeout, stopping');
+          this.stopVoiceRecognition();
+        }
+      }, 10000);
+
+      try {
+        this.recognition.start();
+      } catch (err) {
+        console.error('[Kalaama] Failed to start voice:', err);
+        this.isListening = false;
+        clearTimeout(timeoutId);
+        reject(new Error('Failed to start speech recognition'));
+      }
+    });
+  }
+
+  private stopVoiceRecognition(): void {
+    if (this.recognition && this.isListening) {
+      try {
+        this.recognition.stop();
+      } catch (err) {
+        console.warn('[Kalaama] Error stopping voice:', err);
+      }
+      this.isListening = false;
+    }
+  }
+
+  private async checkVoicePermission(): Promise<boolean> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      return true;
+    } catch (err) {
+      console.warn('[Kalaama] Voice permission check failed:', err);
+      return false;
+    }
   }
 
   private async loadSettings(): Promise<void> {
@@ -404,6 +588,22 @@ class KalaamaContentScript {
         sendResponse({ success: true });
         break;
 
+      // Voice recognition commands (runs on youtube.com context where mic is permitted)
+      case 'VOICE_START':
+        this.handleVoiceStart(message.payload as { language: string }, sendResponse);
+        return true; // Keep channel open for async response
+
+      case 'VOICE_STOP':
+        this.stopVoiceRecognition();
+        sendResponse({ success: true });
+        break;
+
+      case 'VOICE_CHECK_PERMISSION':
+        this.checkVoicePermission().then(hasPermission => {
+          sendResponse({ hasPermission });
+        });
+        return true; // Keep channel open for async response
+
       default:
         sendResponse({ error: 'Unknown message type' });
     }
@@ -448,6 +648,18 @@ class KalaamaContentScript {
       video.currentTime = payload.time;
       console.log('[Kalaama] Video seeked to:', payload.time);
     }
+  }
+
+  private handleVoiceStart(payload: { language: string }, sendResponse: (response: unknown) => void): void {
+    this.startVoiceRecognition(payload.language)
+      .then(transcript => {
+        console.log('[Kalaama] Voice result:', transcript);
+        sendResponse({ success: true, transcript });
+      })
+      .catch(err => {
+        console.error('[Kalaama] Voice error:', err.message);
+        sendResponse({ success: false, error: err.message });
+      });
   }
 
   private getVideoId(): string | null {

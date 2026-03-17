@@ -146,13 +146,28 @@ import { SettingsService, UserSettings } from '../../core/services/settings.serv
       <div class="card">
         <h2 class="font-semibold mb-3">AI Features</h2>
 
-        <div class="space-y-3">
+        <div class="space-y-4">
+          <!-- AI Provider Selection -->
+          <div>
+            <label class="block text-sm text-slate-500 mb-1">AI Provider for Conversations</label>
+            <select
+              [(ngModel)]="aiProvider"
+              (change)="saveAiProvider()"
+              class="input"
+            >
+              <option value="gemini">Google Gemini (Recommended)</option>
+              <option value="openai">OpenAI GPT-4</option>
+              <option value="claude">Anthropic Claude</option>
+            </select>
+          </div>
+
+          <!-- Gemini API Key -->
           <div>
             <label class="block text-sm text-slate-500 mb-1">Google Gemini API Key</label>
             <input
               type="password"
               [(ngModel)]="geminiApiKey"
-              (blur)="saveGeminiKey()"
+              (blur)="saveApiKey('gemini')"
               class="input"
               placeholder="Enter your Gemini API key"
             />
@@ -164,15 +179,121 @@ import { SettingsService, UserSettings } from '../../core/services/settings.serv
             </p>
           </div>
 
-          <div *ngIf="geminiApiKey" class="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+          <!-- OpenAI API Key (shown when selected) -->
+          <div *ngIf="aiProvider === 'openai'">
+            <label class="block text-sm text-slate-500 mb-1">OpenAI API Key</label>
+            <input
+              type="password"
+              [(ngModel)]="openaiApiKey"
+              (blur)="saveApiKey('openai')"
+              class="input"
+              placeholder="Enter your OpenAI API key"
+            />
+            <p class="text-xs text-slate-400 mt-1">
+              Get your API key from
+              <a href="https://platform.openai.com/api-keys" target="_blank" class="text-indigo-600 hover:underline">
+                OpenAI Platform
+              </a>
+            </p>
+          </div>
+
+          <!-- Claude API Key (shown when selected) -->
+          <div *ngIf="aiProvider === 'claude'">
+            <label class="block text-sm text-slate-500 mb-1">Anthropic Claude API Key</label>
+            <input
+              type="password"
+              [(ngModel)]="claudeApiKey"
+              (blur)="saveApiKey('claude')"
+              class="input"
+              placeholder="Enter your Claude API key"
+            />
+            <p class="text-xs text-slate-400 mt-1">
+              Get your API key from
+              <a href="https://console.anthropic.com/settings/keys" target="_blank" class="text-indigo-600 hover:underline">
+                Anthropic Console
+              </a>
+            </p>
+          </div>
+
+          <!-- Status indicator -->
+          <div *ngIf="hasActiveApiKey()" class="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
             </svg>
-            <span>API key configured</span>
+            <span>{{ aiProvider | titlecase }} API key configured</span>
           </div>
 
           <p class="text-xs text-slate-500">
-            With an API key, you'll get detailed word definitions, examples, and pronunciation when clicking on words.
+            AI powers word definitions, language tutoring, and voice conversation features.
+          </p>
+        </div>
+      </div>
+
+      <!-- Voice & Learning Settings -->
+      <div class="card">
+        <h2 class="font-semibold mb-3">Voice Learning</h2>
+
+        <div class="space-y-4">
+          <!-- ElevenLabs API Key -->
+          <div>
+            <label class="block text-sm text-slate-500 mb-1">ElevenLabs API Key (Text-to-Speech)</label>
+            <input
+              type="password"
+              [(ngModel)]="elevenlabsApiKey"
+              (blur)="saveApiKey('elevenlabs')"
+              class="input"
+              placeholder="Enter your ElevenLabs API key"
+            />
+            <p class="text-xs text-slate-400 mt-1">
+              Get your API key from
+              <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" class="text-indigo-600 hover:underline">
+                ElevenLabs
+              </a>
+              for natural AI voice responses.
+            </p>
+          </div>
+
+          <div *ngIf="elevenlabsApiKey" class="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+            </svg>
+            <span>ElevenLabs configured - voice responses enabled</span>
+          </div>
+
+          <!-- Voice Selection (shown when ElevenLabs is configured) -->
+          <div *ngIf="elevenlabsApiKey">
+            <label class="block text-sm text-slate-500 mb-1">AI Tutor Voice</label>
+            <select
+              [(ngModel)]="voiceSettings.voiceId"
+              (change)="saveVoiceSettings()"
+              class="input"
+            >
+              <option value="EXAVITQu4vr4xnSDxMaL">Sarah (Female, Warm)</option>
+              <option value="ErXwobaYiN019PkySvjV">Antoni (Male, Clear)</option>
+              <option value="MF3mGyEYCl7XYWbV9V6O">Emily (Female, Soft)</option>
+              <option value="TxGEqnHWrfWFTfGW9XjX">Josh (Male, Deep)</option>
+              <option value="pNInz6obpgDQGcFmaJgB">Adam (Male, Narrator)</option>
+            </select>
+          </div>
+
+          <!-- Speech Rate -->
+          <div *ngIf="elevenlabsApiKey">
+            <label class="block text-sm text-slate-500 mb-1">
+              Speech Speed: {{ voiceSettings.speed }}x
+            </label>
+            <input
+              type="range"
+              [(ngModel)]="voiceSettings.speed"
+              (change)="saveVoiceSettings()"
+              min="0.5"
+              max="1.5"
+              step="0.1"
+              class="w-full"
+            />
+          </div>
+
+          <p class="text-xs text-slate-500">
+            Voice learning lets you practice speaking with an AI tutor who responds in natural speech.
           </p>
         </div>
       </div>
@@ -199,7 +320,20 @@ export class SettingsComponent implements OnInit {
     theme: 'auto',
   };
 
+  // API Keys
   geminiApiKey = '';
+  openaiApiKey = '';
+  claudeApiKey = '';
+  elevenlabsApiKey = '';
+
+  // AI Provider selection
+  aiProvider: 'gemini' | 'openai' | 'claude' = 'gemini';
+
+  // Voice settings
+  voiceSettings = {
+    voiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah - default voice
+    speed: 1.0,
+  };
 
   languages = [
     { code: 'en', name: 'English', flag: '🇬🇧' },
@@ -222,31 +356,92 @@ export class SettingsComponent implements OnInit {
       this.settings = { ...settings };
     });
 
-    // Load Gemini API key
-    await this.loadGeminiKey();
+    // Load all API keys and settings
+    await this.loadAllApiKeys();
   }
 
   async saveSettings(): Promise<void> {
     await this.settingsService.updateSettings(this.settings);
   }
 
-  private async loadGeminiKey(): Promise<void> {
+  private async loadAllApiKeys(): Promise<void> {
     try {
-      const result = await chrome.storage.local.get('gemini_api_key');
+      const result = await chrome.storage.local.get([
+        'gemini_api_key',
+        'openai_api_key',
+        'claude_api_key',
+        'elevenlabs_api_key',
+        'ai_provider',
+        'voice_settings',
+      ]);
+
       if (result['gemini_api_key']) {
         this.geminiApiKey = result['gemini_api_key'];
       }
+      if (result['openai_api_key']) {
+        this.openaiApiKey = result['openai_api_key'];
+      }
+      if (result['claude_api_key']) {
+        this.claudeApiKey = result['claude_api_key'];
+      }
+      if (result['elevenlabs_api_key']) {
+        this.elevenlabsApiKey = result['elevenlabs_api_key'];
+      }
+      if (result['ai_provider']) {
+        this.aiProvider = result['ai_provider'];
+      }
+      if (result['voice_settings']) {
+        this.voiceSettings = { ...this.voiceSettings, ...result['voice_settings'] };
+      }
     } catch (error) {
-      console.warn('[Settings] Failed to load Gemini API key:', error);
+      console.warn('[Settings] Failed to load API keys:', error);
     }
   }
 
-  async saveGeminiKey(): Promise<void> {
+  async saveApiKey(provider: 'gemini' | 'openai' | 'claude' | 'elevenlabs'): Promise<void> {
     try {
-      await chrome.storage.local.set({ gemini_api_key: this.geminiApiKey });
-      console.log('[Settings] Gemini API key saved');
+      const keyMap: Record<string, string> = {
+        gemini: this.geminiApiKey,
+        openai: this.openaiApiKey,
+        claude: this.claudeApiKey,
+        elevenlabs: this.elevenlabsApiKey,
+      };
+
+      await chrome.storage.local.set({ [`${provider}_api_key`]: keyMap[provider] });
+      console.log(`[Settings] ${provider} API key saved`);
     } catch (error) {
-      console.error('[Settings] Failed to save Gemini API key:', error);
+      console.error(`[Settings] Failed to save ${provider} API key:`, error);
+    }
+  }
+
+  async saveAiProvider(): Promise<void> {
+    try {
+      await chrome.storage.local.set({ ai_provider: this.aiProvider });
+      console.log('[Settings] AI provider saved:', this.aiProvider);
+    } catch (error) {
+      console.error('[Settings] Failed to save AI provider:', error);
+    }
+  }
+
+  async saveVoiceSettings(): Promise<void> {
+    try {
+      await chrome.storage.local.set({ voice_settings: this.voiceSettings });
+      console.log('[Settings] Voice settings saved:', this.voiceSettings);
+    } catch (error) {
+      console.error('[Settings] Failed to save voice settings:', error);
+    }
+  }
+
+  hasActiveApiKey(): boolean {
+    switch (this.aiProvider) {
+      case 'gemini':
+        return !!this.geminiApiKey;
+      case 'openai':
+        return !!this.openaiApiKey;
+      case 'claude':
+        return !!this.claudeApiKey;
+      default:
+        return false;
     }
   }
 }

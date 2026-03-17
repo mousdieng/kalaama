@@ -15,7 +15,24 @@
 // const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // =============================================================================
 
-import type { Message, SaveWordPayload, TranslateWordPayload, FetchCaptionsPayload, VideoControlPayload, WordContextPayload, WordContextResponse, SeekToCuePayload } from '../shared/types/messages';
+import type {
+  Message,
+  SaveWordPayload,
+  TranslateWordPayload,
+  FetchCaptionsPayload,
+  VideoControlPayload,
+  WordContextPayload,
+  WordContextResponse,
+  SeekToCuePayload,
+  AITutorPayload,
+  AITutorResponse,
+  TTSPayload,
+  TTSResponse,
+  AIProvider,
+  ConversationTutorPayload,
+  ConversationTutorResponse,
+  ConversationPhase,
+} from '../shared/types/messages';
 
 const MYMEMORY_EMAIL = 'kalaama@example.com';
 
@@ -83,6 +100,18 @@ async function handleMessage(
     // AI word context
     case 'GET_WORD_CONTEXT':
       return getWordContext(message.payload as WordContextPayload);
+
+    // AI Tutor for learning feature
+    case 'GET_AI_TUTOR_RESPONSE':
+      return getAITutorResponse(message.payload as AITutorPayload);
+
+    // Conversation-based AI Tutor (new themed learning)
+    case 'GET_CONVERSATION_TUTOR_RESPONSE':
+      return getConversationTutorResponse(message.payload as ConversationTutorPayload);
+
+    // Text-to-Speech
+    case 'TEXT_TO_SPEECH':
+      return textToSpeech(message.payload as TTSPayload);
 
     default:
       console.warn('[Kalaama] Unknown message type:', message.type);
@@ -583,6 +612,710 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
       translation: translation.translation
     };
   }
+}
+
+// ============================================
+// AI TUTOR FUNCTIONS
+// ============================================
+
+/**
+ * Get AI tutor response for language learning
+ */
+async function getAITutorResponse(payload: AITutorPayload): Promise<AITutorResponse> {
+  const { userResponse, lessonContext, currentPrompt, language, nativeLanguage, conversationHistory } = payload;
+
+  // Get AI provider and API key from storage
+  const storage = await chrome.storage.local.get(['ai_provider', 'gemini_api_key', 'openai_api_key', 'claude_api_key']);
+  const provider: AIProvider = storage.ai_provider || 'gemini';
+
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+  };
+
+  const targetLangName = languageNames[language] || language;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  // Check if user response matches expected
+  const isCorrect = checkResponse(userResponse, currentPrompt.expectedResponses || [], currentPrompt.targetPhrase);
+
+  // Build conversation context
+  const historyText = conversationHistory?.slice(-4)
+    .map(turn => `${turn.role === 'user' ? 'Student' : 'Tutor'}: ${turn.text}`)
+    .join('\n') || '';
+
+  const systemPrompt = `You are a friendly, encouraging ${targetLangName} language tutor helping a student learn.
+
+CONTEXT:
+- Lesson: ${lessonContext}
+- Current task: ${currentPrompt.instruction}
+- Expected phrase: "${currentPrompt.targetPhrase || 'any valid response'}"
+- Student's native language: ${nativeLangName}
+
+${historyText ? `Recent conversation:\n${historyText}\n` : ''}
+
+The student just said: "${userResponse}"
+${isCorrect ? 'Their response was CORRECT!' : 'Their response needs improvement.'}
+
+Respond naturally in 1-2 SHORT sentences (max 30 words):
+1. ${isCorrect ? 'Praise them briefly' : 'Gently correct them'}
+2. If wrong, show the correct phrase
+3. Encourage them to continue
+
+IMPORTANT: Respond ONLY with valid JSON:
+{
+  "text": "Your response here",
+  "isCorrect": ${isCorrect},
+  "correction": ${isCorrect ? 'null' : '"correct phrase here"'},
+  "encouragement": "${isCorrect ? 'Great job!' : 'Keep practicing!'}"
+}`;
+
+  try {
+    let aiResponse: string;
+
+    switch (provider) {
+      case 'openai':
+        aiResponse = await callOpenAI(systemPrompt, storage.openai_api_key);
+        break;
+      case 'claude':
+        aiResponse = await callClaude(systemPrompt, storage.claude_api_key);
+        break;
+      case 'gemini':
+      default:
+        aiResponse = await callGemini(systemPrompt, storage.gemini_api_key);
+        break;
+    }
+
+    // Parse response
+    const parsed = parseAIResponse(aiResponse, isCorrect, currentPrompt.targetPhrase);
+    return {
+      ...parsed,
+      shouldAdvance: true,
+      xpEarned: isCorrect ? 5 : 1,
+    };
+  } catch (error) {
+    console.error('[Kalaama] AI tutor error:', error);
+    // Fallback response
+    return {
+      text: isCorrect
+        ? 'Great job! That\'s correct. Let\'s continue.'
+        : `Good try! The correct phrase is "${currentPrompt.targetPhrase}". Keep practicing!`,
+      isCorrect,
+      correction: isCorrect ? undefined : currentPrompt.targetPhrase,
+      encouragement: isCorrect ? 'Excellent!' : 'You\'re making progress!',
+      shouldAdvance: true,
+      xpEarned: isCorrect ? 5 : 1,
+    };
+  }
+}
+
+/**
+ * Check if user response matches expected responses
+ */
+function checkResponse(userResponse: string, expectedResponses: string[], targetPhrase?: string): boolean {
+  const normalizedUser = userResponse.toLowerCase().trim()
+    .replace(/[.,!?¿¡]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Check against expected responses
+  for (const expected of expectedResponses) {
+    const normalizedExpected = expected.toLowerCase().trim()
+      .replace(/[.,!?¿¡]/g, '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    if (normalizedUser.includes(normalizedExpected) || normalizedExpected.includes(normalizedUser)) {
+      return true;
+    }
+  }
+
+  // Check against target phrase
+  if (targetPhrase) {
+    const normalizedTarget = targetPhrase.toLowerCase().trim()
+      .replace(/[.,!?¿¡]/g, '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const similarity = calculateSimilarity(normalizedUser, normalizedTarget);
+    return similarity > 0.7; // 70% similarity threshold
+  }
+
+  return false;
+}
+
+/**
+ * Calculate string similarity (Levenshtein-based)
+ */
+function calculateSimilarity(s1: string, s2: string): number {
+  const longer = s1.length > s2.length ? s1 : s2;
+  const shorter = s1.length > s2.length ? s2 : s1;
+
+  if (longer.length === 0) return 1.0;
+
+  const editDistance = levenshteinDistance(longer, shorter);
+  return (longer.length - editDistance) / longer.length;
+}
+
+function levenshteinDistance(s1: string, s2: string): number {
+  const costs: number[] = [];
+  for (let i = 0; i <= s1.length; i++) {
+    let lastValue = i;
+    for (let j = 0; j <= s2.length; j++) {
+      if (i === 0) {
+        costs[j] = j;
+      } else if (j > 0) {
+        let newValue = costs[j - 1];
+        if (s1.charAt(i - 1) !== s2.charAt(j - 1)) {
+          newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+        }
+        costs[j - 1] = lastValue;
+        lastValue = newValue;
+      }
+    }
+    if (i > 0) costs[s2.length] = lastValue;
+  }
+  return costs[s2.length];
+}
+
+/**
+ * Parse AI response JSON
+ */
+function parseAIResponse(response: string, isCorrect: boolean, targetPhrase?: string): Omit<AITutorResponse, 'shouldAdvance' | 'xpEarned'> {
+  try {
+    // Extract JSON from response
+    let jsonStr = response.trim();
+    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    const parsed = JSON.parse(jsonStr);
+    return {
+      text: parsed.text || 'Let\'s continue practicing!',
+      isCorrect: parsed.isCorrect ?? isCorrect,
+      correction: parsed.correction || undefined,
+      encouragement: parsed.encouragement || (isCorrect ? 'Great!' : 'Keep trying!'),
+    };
+  } catch (error) {
+    console.warn('[Kalaama] Failed to parse AI response:', error);
+    return {
+      text: isCorrect ? 'Well done!' : `Try saying "${targetPhrase}"`,
+      isCorrect,
+      correction: isCorrect ? undefined : targetPhrase,
+      encouragement: isCorrect ? 'Excellent!' : 'You can do it!',
+    };
+  }
+}
+
+/**
+ * Call Gemini API
+ */
+async function callGemini(prompt: string, apiKey: string): Promise<string> {
+  if (!apiKey) throw new Error('Gemini API key not configured');
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 200 }
+      })
+    }
+  );
+
+  if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
+
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+/**
+ * Call OpenAI API
+ */
+async function callOpenAI(prompt: string, apiKey: string): Promise<string> {
+  if (!apiKey) throw new Error('OpenAI API key not configured');
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.7,
+      max_tokens: 200
+    })
+  });
+
+  if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+/**
+ * Call Claude API
+ */
+async function callClaude(prompt: string, apiKey: string): Promise<string> {
+  if (!apiKey) throw new Error('Claude API key not configured');
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 200,
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+
+  if (!response.ok) throw new Error(`Claude API error: ${response.status}`);
+
+  const data = await response.json();
+  return data.content?.[0]?.text || '';
+}
+
+// ============================================
+// CONVERSATION-BASED AI TUTOR
+// ============================================
+
+/**
+ * Get conversation-based AI tutor response for themed learning
+ * Handles vocabulary, phrases, and roleplay phases
+ */
+async function getConversationTutorResponse(payload: ConversationTutorPayload): Promise<ConversationTutorResponse> {
+  const { phase, unit, userResponse, currentVocab, currentPhrase, vocabMastered, conversationHistory, targetLanguage, nativeLanguage } = payload;
+
+  // Get AI provider and API key from storage
+  const storage = await chrome.storage.local.get(['ai_provider', 'gemini_api_key', 'openai_api_key', 'claude_api_key']);
+  const provider: AIProvider = storage.ai_provider || 'gemini';
+
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+  };
+
+  const targetLangName = languageNames[targetLanguage] || targetLanguage;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  let systemPrompt: string;
+  let isCorrect = false;
+
+  // Build prompt based on phase
+  switch (phase) {
+    case 'vocabulary':
+      isCorrect = currentVocab ? checkPronunciation(userResponse, currentVocab.word) : false;
+      systemPrompt = buildVocabularyPrompt(unit, currentVocab!, userResponse, isCorrect, nativeLangName, targetLangName);
+      break;
+
+    case 'phrases':
+      isCorrect = currentPhrase ? checkPhraseConstruction(userResponse, currentPhrase) : false;
+      systemPrompt = buildPhrasesPrompt(unit, currentPhrase!, userResponse, isCorrect, vocabMastered, nativeLangName, targetLangName);
+      break;
+
+    case 'roleplay':
+      systemPrompt = buildRoleplayPrompt(unit, userResponse, conversationHistory, vocabMastered, nativeLangName, targetLangName);
+      isCorrect = true; // In roleplay, we don't strictly check correctness
+      break;
+
+    default:
+      throw new Error(`Invalid conversation phase: ${phase}`);
+  }
+
+  try {
+    let aiResponse: string;
+
+    switch (provider) {
+      case 'openai':
+        aiResponse = await callOpenAI(systemPrompt, storage.openai_api_key);
+        break;
+      case 'claude':
+        aiResponse = await callClaude(systemPrompt, storage.claude_api_key);
+        break;
+      case 'gemini':
+      default:
+        aiResponse = await callGemini(systemPrompt, storage.gemini_api_key);
+        break;
+    }
+
+    // Parse response
+    return parseConversationResponse(aiResponse, phase, isCorrect, currentVocab?.word, vocabMastered, unit);
+  } catch (error) {
+    console.error('[Kalaama] Conversation tutor error:', error);
+    // Fallback response
+    return buildFallbackResponse(phase, isCorrect, currentVocab?.word, nativeLangName);
+  }
+}
+
+/**
+ * Check if user's pronunciation matches the target word
+ */
+function checkPronunciation(userResponse: string, targetWord: string): boolean {
+  const normalizedUser = userResponse.toLowerCase().trim()
+    .replace(/[.,!?¿¡"']/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const normalizedTarget = targetWord.toLowerCase().trim()
+    .replace(/[.,!?¿¡"']/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Check exact match
+  if (normalizedUser === normalizedTarget) return true;
+
+  // Check similarity (more lenient for pronunciation)
+  const similarity = calculateSimilarity(normalizedUser, normalizedTarget);
+  return similarity > 0.65; // 65% similarity for pronunciation
+}
+
+/**
+ * Check if user constructed a valid phrase
+ */
+function checkPhraseConstruction(userResponse: string, phrasePattern: { pattern: string; vocabSlots: string[] }): boolean {
+  // For phrases, we're more lenient - just check if it contains key words
+  const normalizedUser = userResponse.toLowerCase().trim()
+    .replace(/[.,!?¿¡"']/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Extract the base pattern without placeholders
+  const patternBase = phrasePattern.pattern.toLowerCase()
+    .replace(/_+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.,!?¿¡"']/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Check if user's response contains key parts of the pattern
+  const patternWords = patternBase.split(' ').filter(w => w.length > 2);
+  const matchedWords = patternWords.filter(word => normalizedUser.includes(word));
+
+  return matchedWords.length >= patternWords.length * 0.5;
+}
+
+/**
+ * Build prompt for vocabulary phase
+ */
+function buildVocabularyPrompt(
+  unit: ConversationTutorPayload['unit'],
+  currentVocab: ConversationTutorPayload['currentVocab'],
+  userResponse: string,
+  isCorrect: boolean,
+  nativeLangName: string,
+  targetLangName: string
+): string {
+  return `Tu es un tuteur amical et encourageant qui aide un francophone à apprendre l'allemand.
+
+CONTEXTE:
+- Thème de la leçon: "${unit.titleNative}" (${unit.title})
+- Phase actuelle: Apprentissage du vocabulaire
+- Mot actuel: "${currentVocab?.word}" (${currentVocab?.translation})
+- Phrase d'exemple: "${currentVocab?.exampleSentence}"
+
+L'élève vient de dire: "${userResponse}"
+${isCorrect ? 'Sa prononciation était CORRECTE!' : 'Sa prononciation nécessite une amélioration.'}
+
+Réponds en 1-2 phrases COURTES (max 25 mots) EN FRANÇAIS:
+1. ${isCorrect ? 'Félicite-le brièvement' : 'Corrige-le gentiment, dis-lui le bon mot'}
+2. Encourage-le à continuer
+
+IMPORTANT: Réponds UNIQUEMENT avec du JSON valide:
+{
+  "text": "Ta réponse ici en français",
+  "textInTargetLanguage": "${isCorrect ? '' : currentVocab?.word}",
+  "isCorrect": ${isCorrect},
+  "correction": ${isCorrect ? 'null' : `"${currentVocab?.word}"`},
+  "encouragement": "${isCorrect ? 'Excellent!' : 'Réessayez!'}",
+  "shouldAdvance": ${isCorrect}
+}`;
+}
+
+/**
+ * Build prompt for phrases phase
+ */
+function buildPhrasesPrompt(
+  unit: ConversationTutorPayload['unit'],
+  currentPhrase: ConversationTutorPayload['currentPhrase'],
+  userResponse: string,
+  isCorrect: boolean,
+  vocabMastered: string[],
+  nativeLangName: string,
+  targetLangName: string
+): string {
+  return `Tu es un tuteur amical et encourageant qui aide un francophone à apprendre l'allemand.
+
+CONTEXTE:
+- Thème: "${unit.titleNative}" (${unit.title})
+- Phase actuelle: Construction de phrases
+- Structure attendue: "${currentPhrase?.pattern}" (${currentPhrase?.translation})
+- Indice: ${currentPhrase?.hint || 'Aucun'}
+
+L'élève vient de dire: "${userResponse}"
+${isCorrect ? 'Sa phrase était CORRECTE ou acceptable!' : 'Sa phrase nécessite une amélioration.'}
+
+Réponds en 1-2 phrases COURTES (max 30 mots) EN FRANÇAIS:
+1. ${isCorrect ? 'Félicite-le et montre une variation possible' : 'Corrige-le gentiment avec la bonne structure'}
+2. ${isCorrect ? 'Propose de passer à la suite' : 'Encourage-le à réessayer ou propose un exemple'}
+
+IMPORTANT: Réponds UNIQUEMENT avec du JSON valide:
+{
+  "text": "Ta réponse ici en français",
+  "textInTargetLanguage": "${isCorrect ? '' : currentPhrase?.pattern}",
+  "isCorrect": ${isCorrect},
+  "correction": ${isCorrect ? 'null' : `"${currentPhrase?.pattern}"`},
+  "encouragement": "${isCorrect ? 'Bravo!' : 'Essayez encore!'}",
+  "shouldAdvance": ${isCorrect}
+}`;
+}
+
+/**
+ * Build prompt for roleplay phase
+ */
+function buildRoleplayPrompt(
+  unit: ConversationTutorPayload['unit'],
+  userResponse: string,
+  conversationHistory: ConversationTutorPayload['conversationHistory'],
+  vocabMastered: string[],
+  nativeLangName: string,
+  targetLangName: string
+): string {
+  const scenario = unit.roleplayScenario;
+  const vocabNotYetUsed = unit.vocabulary
+    .filter(v => !vocabMastered.includes(v.id))
+    .map(v => `${v.word} (${v.translation})`)
+    .slice(0, 3);
+
+  const historyText = conversationHistory.slice(-6)
+    .map(turn => `${turn.role === 'user' ? 'Client' : scenario.aiCharacter}: ${turn.text}`)
+    .join('\n');
+
+  const coveragePercent = (vocabMastered.length / unit.vocabulary.length) * 100;
+  const shouldEnd = coveragePercent >= scenario.targetVocabUsage || conversationHistory.length >= (scenario.maxTurns || 10) * 2;
+
+  return `Tu es ${scenario.aiCharacter} dans un jeu de rôle pour enseigner l'allemand à un francophone.
+
+SCÉNARIO: ${scenario.scenario}
+THÈME: ${unit.title} - ${unit.titleNative}
+
+HISTORIQUE DE LA CONVERSATION:
+${historyText || '(Début de la conversation)'}
+
+Le client vient de dire: "${userResponse}"
+
+VOCABULAIRE PAS ENCORE UTILISÉ: ${vocabNotYetUsed.join(', ') || 'Tous les mots ont été couverts!'}
+COUVERTURE: ${Math.round(coveragePercent)}% (objectif: ${scenario.targetVocabUsage}%)
+
+INSTRUCTIONS:
+1. Réponds EN ALLEMAND comme ${scenario.aiCharacter}
+2. Si l'élève fait une erreur grammaticale, corrige-le gentiment EN FRANÇAIS avant de continuer
+3. Guide subtilement la conversation pour utiliser le vocabulaire non encore pratiqué
+4. Garde tes réponses courtes et naturelles (max 20 mots en allemand)
+${shouldEnd ? '5. TERMINE la conversation naturellement - dis au revoir!' : ''}
+
+IMPORTANT: Réponds UNIQUEMENT avec du JSON valide:
+{
+  "text": "Ta réponse principale ici (correction en français si nécessaire)",
+  "textInTargetLanguage": "Ta réponse EN ALLEMAND",
+  "isCorrect": true,
+  "correction": null,
+  "encouragement": "",
+  "shouldAdvance": true,
+  "shouldEndPhase": ${shouldEnd},
+  "vocabUsed": []
+}`;
+}
+
+/**
+ * Parse conversation AI response
+ */
+function parseConversationResponse(
+  response: string,
+  phase: ConversationPhase,
+  isCorrect: boolean,
+  targetWord: string | undefined,
+  vocabMastered: string[],
+  unit: ConversationTutorPayload['unit']
+): ConversationTutorResponse {
+  try {
+    let jsonStr = response.trim();
+    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    const parsed = JSON.parse(jsonStr);
+
+    // Calculate if phase should end
+    let shouldEndPhase = parsed.shouldEndPhase || false;
+    if (phase === 'roleplay') {
+      const coveragePercent = (vocabMastered.length / unit.vocabulary.length) * 100;
+      shouldEndPhase = shouldEndPhase || coveragePercent >= unit.roleplayScenario.targetVocabUsage;
+    }
+
+    return {
+      text: parsed.text || 'Continuons!',
+      textInTargetLanguage: parsed.textInTargetLanguage || undefined,
+      isCorrect: parsed.isCorrect ?? isCorrect,
+      correction: parsed.correction || undefined,
+      encouragement: parsed.encouragement || (isCorrect ? 'Bien!' : 'Réessayez!'),
+      shouldAdvance: parsed.shouldAdvance ?? isCorrect,
+      shouldEndPhase,
+      vocabUsed: parsed.vocabUsed || [],
+    };
+  } catch (error) {
+    console.warn('[Kalaama] Failed to parse conversation response:', error);
+    return {
+      text: isCorrect ? 'Très bien!' : `Essayez de dire "${targetWord}"`,
+      isCorrect,
+      correction: isCorrect ? undefined : targetWord,
+      encouragement: isCorrect ? 'Excellent!' : 'Courage!',
+      shouldAdvance: isCorrect,
+      shouldEndPhase: false,
+    };
+  }
+}
+
+/**
+ * Build fallback response when AI fails
+ */
+function buildFallbackResponse(
+  phase: ConversationPhase,
+  isCorrect: boolean,
+  targetWord: string | undefined,
+  nativeLangName: string
+): ConversationTutorResponse {
+  const messages: Record<ConversationPhase, { correct: string; incorrect: string }> = {
+    loading: { correct: '', incorrect: '' },
+    vocabulary: {
+      correct: 'Parfait! Votre prononciation est excellente.',
+      incorrect: `Bonne tentative! Le mot correct est "${targetWord}". Réessayez!`
+    },
+    phrases: {
+      correct: 'Très bien! Votre phrase est correcte.',
+      incorrect: 'Presque! Essayez encore avec la structure proposée.'
+    },
+    roleplay: {
+      correct: 'Gut! Sehr gut!',
+      incorrect: 'Versuchen Sie es noch einmal!'
+    },
+    complete: {
+      correct: 'Félicitations! Vous avez terminé cette leçon!',
+      incorrect: ''
+    },
+    error: { correct: '', incorrect: '' }
+  };
+
+  const msg = messages[phase] || messages.vocabulary;
+
+  return {
+    text: isCorrect ? msg.correct : msg.incorrect,
+    isCorrect,
+    correction: isCorrect ? undefined : targetWord,
+    encouragement: isCorrect ? 'Excellent!' : 'Vous y êtes presque!',
+    shouldAdvance: isCorrect,
+    shouldEndPhase: false,
+  };
+}
+
+// ============================================
+// TEXT-TO-SPEECH FUNCTIONS
+// ============================================
+
+// Language-specific ElevenLabs voice IDs
+const ELEVENLABS_VOICES: Record<string, string> = {
+  de: 'pNInz6obpgDQGcFmaJgB', // Adam - German male
+  fr: 'EXAVITQu4vr4xnSDxMaL', // Sarah - French female
+  es: 'EXAVITQu4vr4xnSDxMaL', // Sarah - Spanish
+  en: 'EXAVITQu4vr4xnSDxMaL', // Sarah - English
+  it: 'EXAVITQu4vr4xnSDxMaL', // Sarah - Italian
+  pt: 'EXAVITQu4vr4xnSDxMaL', // Sarah - Portuguese
+};
+
+/**
+ * Convert text to speech using ElevenLabs API
+ */
+async function textToSpeech(payload: TTSPayload): Promise<TTSResponse> {
+  const { text, language, voiceId, speed } = payload;
+
+  // Get ElevenLabs API key and voice settings from storage
+  const storage = await chrome.storage.local.get(['elevenlabs_api_key', 'voice_settings']);
+  const apiKey = storage.elevenlabs_api_key;
+
+  if (!apiKey) {
+    throw new Error('ElevenLabs API key not configured');
+  }
+
+  // Use provided voiceId, language-specific voice, or default from settings
+  const voice = voiceId || ELEVENLABS_VOICES[language] || storage.voice_settings?.voiceId || 'EXAVITQu4vr4xnSDxMaL';
+
+  try {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.0,
+          use_speaker_boost: true
+        }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`ElevenLabs API error: ${response.status}`);
+    }
+
+    // Get audio as ArrayBuffer
+    const audioBuffer = await response.arrayBuffer();
+
+    // Convert to base64
+    const base64Audio = arrayBufferToBase64(audioBuffer);
+
+    return {
+      audioData: base64Audio,
+      duration: estimateAudioDuration(text)
+    };
+  } catch (error) {
+    console.error('[Kalaama] ElevenLabs TTS error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Convert ArrayBuffer to base64 string
+ */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Estimate audio duration based on text length (rough approximation)
+ */
+function estimateAudioDuration(text: string): number {
+  // Average speaking rate is about 150 words per minute
+  const words = text.split(/\s+/).length;
+  return (words / 150) * 60; // Duration in seconds
 }
 
 // Log when service worker starts

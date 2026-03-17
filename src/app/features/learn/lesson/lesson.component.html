@@ -1,0 +1,362 @@
+<div class="flex flex-col h-full bg-white dark:bg-slate-900">
+  <!-- Header -->
+  <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+    <div class="flex items-center justify-between">
+      <button (click)="exitLesson()" class="p-2 -ml-2 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+      <div class="flex-1 mx-4">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-medium text-slate-500">{{ getPhaseTitle() }}</span>
+          <span class="text-xs text-slate-500">{{ getOverallProgress() }}%</span>
+        </div>
+        <div class="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300" [style.width.%]="getOverallProgress()"></div>
+        </div>
+      </div>
+      <div class="flex items-center gap-1 text-amber-600">
+        <span class="text-lg">+</span>
+        <span class="font-bold">{{ xpEarned }}</span>
+        <span class="text-sm">XP</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div *ngIf="phase === 'loading'" class="flex-1 flex items-center justify-center">
+    <div class="text-center">
+      <svg class="animate-spin h-10 w-10 mx-auto text-indigo-500" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      </svg>
+      <p class="mt-3 text-slate-500">Chargement...</p>
+    </div>
+  </div>
+
+  <!-- Error State -->
+  <div *ngIf="phase === 'error'" class="flex-1 flex items-center justify-center p-4">
+    <div class="text-center max-w-sm">
+      <span class="text-5xl">🎤</span>
+      <h3 class="mt-4 text-lg font-bold text-slate-800 dark:text-slate-200">Accès au microphone requis</h3>
+      <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">{{ error }}</p>
+
+      <!-- Manual instructions when permission is blocked -->
+      <div *ngIf="needsManualGrant" class="mt-4 p-4 bg-amber-50 dark:bg-amber-900/30 rounded-lg text-left">
+        <p class="text-sm font-medium text-amber-800 dark:text-amber-200 mb-2">Pour autoriser le microphone :</p>
+        <ol class="text-xs text-amber-700 dark:text-amber-300 space-y-1 list-decimal list-inside">
+          <li>Cliquez sur l'icône du cadenas (🔒) à côté de l'URL dans Chrome</li>
+          <li>Trouvez "Microphone" et sélectionnez "Autoriser"</li>
+          <li>Rechargez cette page</li>
+        </ol>
+      </div>
+
+      <div class="mt-6 space-y-3">
+        <button
+          *ngIf="!needsManualGrant"
+          (click)="retryPermission()"
+          class="w-full px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"
+        >
+          Autoriser le microphone
+        </button>
+        <button (click)="exitLesson()" class="w-full px-6 py-2 text-slate-600 dark:text-slate-400 hover:underline">
+          Retour
+        </button>
+      </div>
+      <p class="mt-4 text-xs text-slate-500">
+        Cette leçon utilise la reconnaissance vocale pour vous aider à pratiquer la prononciation.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- VOCABULARY PHASE -->
+  <!-- ============================================ -->
+  <div *ngIf="phase === 'vocabulary'" class="flex-1 flex flex-col">
+    <!-- Unit Title -->
+    <div class="px-4 pt-4">
+      <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100">{{ unit?.title }}</h2>
+      <p class="text-sm text-slate-500">{{ unit?.titleNative }}</p>
+    </div>
+
+    <!-- Vocab Card -->
+    <div class="flex-1 flex flex-col items-center justify-center px-4 py-6">
+      <div *ngIf="currentVocab" class="vocab-card w-full max-w-sm">
+        <div class="bg-gradient-to-br from-indigo-50 to-purple-50 dark:from-indigo-900/30 dark:to-purple-900/30 rounded-2xl p-6 text-center">
+          <h3 class="text-3xl font-bold text-indigo-700 dark:text-indigo-300 mb-2">{{ currentVocab.word }}</h3>
+          <p class="text-lg text-slate-600 dark:text-slate-400 mb-4">{{ currentVocab.translation }}</p>
+          <button (click)="playVocabAudio()" class="px-4 py-2 bg-white dark:bg-slate-800 rounded-full shadow-md hover:shadow-lg transition-shadow">
+            <span class="text-2xl">🔊</span>
+            <span class="ml-2 text-sm text-slate-600 dark:text-slate-400">Écouter</span>
+          </button>
+        </div>
+
+        <!-- Progress -->
+        <div class="mt-4 text-center text-sm text-slate-500">
+          Mot {{ currentVocabIndex + 1 }} sur {{ unit?.vocabulary?.length }}
+        </div>
+      </div>
+
+      <!-- AI Message -->
+      <div *ngIf="aiMessage" class="mt-4 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl text-center max-w-sm">
+        <p class="text-slate-700 dark:text-slate-300">{{ aiMessage }}</p>
+      </div>
+
+      <!-- Encouragement -->
+      <div *ngIf="encouragement" class="mt-2 text-center">
+        <span class="text-green-600 dark:text-green-400 font-medium">{{ encouragement }}</span>
+      </div>
+
+      <!-- Correction -->
+      <div *ngIf="showCorrection" class="mt-4 text-center">
+        <p class="text-sm text-slate-500">Prononciation correcte :</p>
+        <p class="text-xl font-bold text-indigo-600 dark:text-indigo-400">{{ correction }}</p>
+        <button (click)="retryVocab()" class="mt-2 px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:underline">
+          Réessayer
+        </button>
+      </div>
+
+      <!-- Transcript -->
+      <div *ngIf="transcript" class="mt-4 text-center">
+        <p class="text-sm text-slate-500">Vous avez dit :</p>
+        <p class="text-lg font-medium text-slate-800 dark:text-slate-200">"{{ transcript }}"</p>
+      </div>
+    </div>
+
+    <!-- Mic Button -->
+    <div class="px-4 py-6 border-t border-slate-200 dark:border-slate-700">
+      <div class="flex flex-col items-center">
+        <button
+          *ngIf="!isProcessing && !showCorrection"
+          (mousedown)="startListening()"
+          (mouseup)="stopListening()"
+          (touchstart)="startListening()"
+          (touchend)="stopListening()"
+          class="mic-button w-20 h-20 rounded-full flex items-center justify-center transition-all"
+          [class.bg-indigo-600]="!isListening"
+          [class.hover:bg-indigo-700]="!isListening"
+          [class.bg-red-500]="isListening"
+          [class.listening]="isListening"
+        >
+          <svg *ngIf="!isListening" class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+          </svg>
+          <div *ngIf="isListening" class="wave-animation text-white">
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+          </div>
+        </button>
+        <p *ngIf="!isListening && !isProcessing && !showCorrection" class="mt-3 text-sm text-slate-500">Appuyez pour répéter</p>
+        <p *ngIf="isListening" class="mt-3 text-sm text-red-500 font-medium">Parlez maintenant...</p>
+        <div *ngIf="isProcessing" class="flex items-center gap-2 text-slate-500">
+          <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span>Vérification...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- PHRASE PHASE -->
+  <!-- ============================================ -->
+  <div *ngIf="phase === 'phrases'" class="flex-1 flex flex-col">
+    <div class="px-4 pt-4">
+      <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100">Construction de phrases</h2>
+      <p class="text-sm text-slate-500">Phrase {{ currentPhraseIndex + 1 }} sur {{ unit?.phrasePatterns?.length }}</p>
+    </div>
+
+    <div class="flex-1 flex flex-col items-center justify-center px-4 py-6">
+      <div *ngIf="currentPhrase" class="text-center max-w-sm">
+        <p class="text-sm text-slate-500 mb-2">{{ currentPhrase.hint || 'Essayez de dire' }} :</p>
+        <h3 class="text-2xl font-bold text-slate-800 dark:text-white mb-2">{{ currentPhrase.pattern }}</h3>
+        <p class="text-lg text-indigo-600 dark:text-indigo-400">({{ currentPhrase.translation }})</p>
+      </div>
+
+      <!-- AI Message -->
+      <div *ngIf="aiMessage" class="mt-6 px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl text-center max-w-sm">
+        <p class="text-slate-700 dark:text-slate-300">{{ aiMessage }}</p>
+      </div>
+
+      <!-- Encouragement -->
+      <div *ngIf="encouragement" class="mt-2 text-center">
+        <span class="text-green-600 dark:text-green-400 font-medium">{{ encouragement }}</span>
+      </div>
+
+      <!-- Correction -->
+      <div *ngIf="showCorrection" class="mt-4 text-center">
+        <p class="text-sm text-slate-500">Forme correcte :</p>
+        <p class="text-xl font-bold text-indigo-600 dark:text-indigo-400">{{ correction }}</p>
+        <button (click)="retryPhrase()" class="mt-2 px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:underline">
+          Réessayer
+        </button>
+      </div>
+
+      <!-- Transcript -->
+      <div *ngIf="transcript" class="mt-4 text-center">
+        <p class="text-sm text-slate-500">Vous avez dit :</p>
+        <p class="text-lg font-medium text-slate-800 dark:text-slate-200">"{{ transcript }}"</p>
+      </div>
+    </div>
+
+    <!-- Mic Button -->
+    <div class="px-4 py-6 border-t border-slate-200 dark:border-slate-700">
+      <div class="flex flex-col items-center">
+        <button
+          *ngIf="!isProcessing && !showCorrection"
+          (mousedown)="startListening()"
+          (mouseup)="stopListening()"
+          (touchstart)="startListening()"
+          (touchend)="stopListening()"
+          class="mic-button w-20 h-20 rounded-full flex items-center justify-center transition-all"
+          [class.bg-indigo-600]="!isListening"
+          [class.bg-red-500]="isListening"
+          [class.listening]="isListening"
+        >
+          <svg *ngIf="!isListening" class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+          </svg>
+          <div *ngIf="isListening" class="wave-animation text-white">
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+          </div>
+        </button>
+        <p *ngIf="!isListening && !isProcessing && !showCorrection" class="mt-3 text-sm text-slate-500">Appuyez pour parler</p>
+        <p *ngIf="isListening" class="mt-3 text-sm text-red-500 font-medium">Parlez maintenant...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- ROLEPLAY PHASE -->
+  <!-- ============================================ -->
+  <div *ngIf="phase === 'roleplay'" class="flex-1 flex flex-col">
+    <div class="px-4 pt-4 pb-2 border-b border-slate-200 dark:border-slate-700">
+      <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100">Conversation</h2>
+      <p class="text-sm text-slate-500">{{ unit?.roleplayScenario?.aiCharacter }}</p>
+      <div class="mt-2 flex items-center gap-2">
+        <span class="text-xs text-slate-500">Vocabulaire couvert :</span>
+        <div class="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+          <div class="h-full bg-green-500 transition-all" [style.width.%]="vocabCoverage"></div>
+        </div>
+        <span class="text-xs font-medium text-green-600">{{ vocabCoverage }}%</span>
+      </div>
+    </div>
+
+    <!-- Chat Messages -->
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div *ngFor="let msg of conversationHistory" class="flex" [class.justify-end]="msg.role === 'user'">
+        <div
+          class="chat-bubble px-4 py-3 rounded-2xl"
+          [class.bg-indigo-600]="msg.role === 'user'"
+          [class.text-white]="msg.role === 'user'"
+          [class.bg-slate-100]="msg.role === 'tutor'"
+          [class.dark:bg-slate-800]="msg.role === 'tutor'"
+          [class.text-slate-800]="msg.role === 'tutor'"
+          [class.dark:text-slate-200]="msg.role === 'tutor'"
+        >
+          {{ msg.text }}
+        </div>
+      </div>
+
+      <!-- AI feedback in native language -->
+      <div *ngIf="aiMessage && !isProcessing" class="flex">
+        <div class="chat-bubble px-4 py-2 bg-amber-50 dark:bg-amber-900/30 rounded-xl text-amber-700 dark:text-amber-300 text-sm">
+          {{ aiMessage }}
+        </div>
+      </div>
+
+      <!-- Correction -->
+      <div *ngIf="showCorrection" class="text-center py-2">
+        <p class="text-sm text-slate-500">Correction :</p>
+        <p class="font-medium text-indigo-600 dark:text-indigo-400">{{ correction }}</p>
+      </div>
+    </div>
+
+    <!-- Mic Button -->
+    <div class="px-4 py-4 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+      <div class="flex items-center gap-4">
+        <button
+          (mousedown)="startListening()"
+          (mouseup)="stopListening()"
+          (touchstart)="startListening()"
+          (touchend)="stopListening()"
+          class="mic-button w-14 h-14 rounded-full flex items-center justify-center transition-all flex-shrink-0"
+          [class.bg-indigo-600]="!isListening"
+          [class.bg-red-500]="isListening"
+          [class.listening]="isListening"
+          [disabled]="isProcessing"
+        >
+          <svg *ngIf="!isListening && !isProcessing" class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+          </svg>
+          <div *ngIf="isListening" class="wave-animation text-white">
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+            <div class="wave-bar"></div>
+          </div>
+          <svg *ngIf="isProcessing" class="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+        </button>
+        <div class="flex-1">
+          <p *ngIf="!isListening && !isProcessing" class="text-sm text-slate-500">Appuyez pour répondre en allemand</p>
+          <p *ngIf="isListening" class="text-sm text-red-500 font-medium">Parlez maintenant...</p>
+          <p *ngIf="isProcessing" class="text-sm text-slate-500">Traitement...</p>
+          <p *ngIf="transcript" class="text-sm text-slate-800 dark:text-slate-200 mt-1">"{{ transcript }}"</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- COMPLETE PHASE -->
+  <!-- ============================================ -->
+  <div *ngIf="phase === 'complete'" class="flex-1 flex flex-col items-center justify-center px-4">
+    <div class="text-center">
+      <div class="text-6xl mb-4">🎉</div>
+      <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-2">Félicitations !</h2>
+      <p class="text-slate-600 dark:text-slate-400 mb-6">{{ unit?.titleNative }}</p>
+
+      <div class="grid grid-cols-3 gap-4 mb-8">
+        <div class="text-center p-3 bg-slate-100 dark:bg-slate-800 rounded-xl">
+          <p class="text-2xl font-bold text-indigo-600">{{ vocabMastered.size }}</p>
+          <p class="text-xs text-slate-500">Mots appris</p>
+        </div>
+        <div class="text-center p-3 bg-slate-100 dark:bg-slate-800 rounded-xl">
+          <p class="text-2xl font-bold text-green-600">{{ vocabCoverage }}%</p>
+          <p class="text-xs text-slate-500">Maîtrise</p>
+        </div>
+        <div class="text-center p-3 bg-slate-100 dark:bg-slate-800 rounded-xl">
+          <p class="text-2xl font-bold text-amber-600">+{{ xpEarned }}</p>
+          <p class="text-xs text-slate-500">XP</p>
+        </div>
+      </div>
+
+      <div class="space-y-3">
+        <button (click)="exitLesson()" class="w-full py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700">
+          Continuer
+        </button>
+        <button (click)="retryUnit()" class="w-full py-3 border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800">
+          Recommencer
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error Toast -->
+  <div *ngIf="error && phase !== 'error'" class="absolute bottom-24 left-4 right-4 px-4 py-3 bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 rounded-lg text-sm">
+    {{ error }}
+    <button (click)="error = null" class="float-right font-bold">×</button>
+  </div>
+</div>
