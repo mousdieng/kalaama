@@ -128,5 +128,28 @@ if (copyFile(stylesSrc, stylesDest)) {
   console.log('✓ Content styles copied');
 }
 
+// Copy reading styles
+const readingStylesSrc = path.join(ROOT, 'src', 'chrome', 'content', 'reading-styles.css');
+const readingStylesDest = path.join(DIST, 'content', 'reading-styles.css');
+if (copyFile(readingStylesSrc, readingStylesDest)) {
+  console.log('✓ Reading styles copied');
+}
+
+// Check reading content script
+if (fs.existsSync(path.join(DIST, 'content', 'reading-content-script.js'))) {
+  console.log('✓ Reading content script present');
+} else {
+  console.log('⚠ Reading content script not found. Run: npm run build:reading');
+}
+
+// Copy PDF.js library
+const libsSrc = path.join(ROOT, 'libs');
+const libsDest = path.join(DIST, 'libs');
+if (copyDir(libsSrc, libsDest)) {
+  console.log('✓ PDF.js library copied');
+} else {
+  console.log('⚠ PDF.js library not found in libs/');
+}
+
 console.log('\n✓ Done! Extension ready to load in Chrome.');
 console.log('  Load the "dist" folder at chrome://extensions');

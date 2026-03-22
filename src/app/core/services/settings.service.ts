@@ -18,6 +18,7 @@ export interface UserSettings {
   highlight_unknown_words: boolean;
   show_pronunciation: boolean;
   theme: 'light' | 'dark' | 'auto';
+  ai_examples_count: number; // Number of AI examples to generate (10-20)
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -30,6 +31,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   highlight_unknown_words: true,
   show_pronunciation: true,
   theme: 'auto',
+  ai_examples_count: 15, // Default to 15 examples
 };
 
 @Injectable({
@@ -145,6 +147,21 @@ export class SettingsService {
     // Save to local storage
     await this.saveLocalSettings(newSettings);
 
+    // Broadcast settings change to all YouTube tabs
+    try {
+      const tabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'SETTINGS_UPDATED',
+            payload: newSettings
+          }).catch(() => {}); // Ignore errors for tabs without content script
+        }
+      }
+    } catch (error) {
+      console.debug('[Kalaama] Could not broadcast settings:', error);
+    }
+
     console.log('[Kalaama] Settings saved to local storage');
 
     // =============================================================================
@@ -173,8 +190,8 @@ export class SettingsService {
    */
   private async getLocalSettings(): Promise<Partial<UserSettings> | null> {
     return new Promise((resolve) => {
-      chrome.storage.local.get(['user_settings'], (result) => {
-        resolve(result['user_settings'] || null);
+      chrome.storage.local.get(['settings'], (result) => {
+        resolve(result['settings'] || null);
       });
     });
   }
@@ -184,7 +201,7 @@ export class SettingsService {
    */
   private async saveLocalSettings(settings: UserSettings): Promise<void> {
     return new Promise((resolve) => {
-      chrome.storage.local.set({ user_settings: settings }, resolve);
+      chrome.storage.local.set({ settings: settings }, resolve);
     });
   }
 

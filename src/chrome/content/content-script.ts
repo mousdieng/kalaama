@@ -362,6 +362,19 @@ class KalaamaContentScript {
       const content = await fetchCaptionContent(track.baseUrl);
       this.translatedSubtitles = parseSubtitles(content);
       console.log('[Kalaama] Parsed translated subtitles:', this.translatedSubtitles.length);
+
+      // Send updated ALL_CAPTIONS with translations now loaded
+      console.log('[Kalaama] [loadTranslatedCaptions] Sending ALL_CAPTIONS with translations:', {
+        captionsCount: this.subtitles.length,
+        translatedCount: this.translatedSubtitles.length
+      });
+      this.sendToSidePanel({
+        type: 'ALL_CAPTIONS',
+        payload: {
+          captions: this.subtitles,
+          translatedCaptions: this.translatedSubtitles
+        }
+      });
     } catch (error) {
       console.warn('[Kalaama] Failed to load translated captions:', error);
       this.translatedSubtitles = [];
@@ -415,6 +428,10 @@ class KalaamaContentScript {
         });
 
         // Send all captions after setup (for lyrics-style display)
+        console.log('[Kalaama] [loadCaptions] Sending ALL_CAPTIONS:', {
+          captionsCount: this.subtitles.length,
+          translatedCount: this.translatedSubtitles.length
+        });
         this.sendToSidePanel({
           type: 'ALL_CAPTIONS',
           payload: {

@@ -23,10 +23,15 @@ export type MessageType =
   | 'ALL_CAPTIONS'
   | 'CUE_INDEX_CHANGE'
   | 'SEEK_TO_CUE'
+  // Video control messages
+  | 'SET_PLAYBACK_SPEED'
+  | 'SET_LOOP_SEGMENT'
+  | 'GET_VIDEO_STATE'
   // Learning feature messages
   | 'GET_AI_TUTOR_RESPONSE'
   | 'GET_CONVERSATION_TUTOR_RESPONSE'
-  | 'TEXT_TO_SPEECH';
+  | 'TEXT_TO_SPEECH'
+  | 'GET_WORD_EXAMPLES';
 
 export interface WordContextResponse {
   definition: string;
@@ -72,6 +77,33 @@ export interface Message<T = unknown> {
   providedIn: 'root',
 })
 export class MessagingService {
+  private messageListeners: Set<(message: Message, sender: chrome.runtime.MessageSender) => void | Promise<unknown>> = new Set();
+  private isListenerAttached = false;
+
+  constructor() {
+    // Set up a single global listener that dispatches to all registered callbacks
+    this.setupGlobalListener();
+  }
+
+  private setupGlobalListener(): void {
+    if (this.isListenerAttached) return;
+    this.isListenerAttached = true;
+
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      let hasAsyncResponse = false;
+
+      for (const callback of this.messageListeners) {
+        const result = callback(message, sender);
+        if (result instanceof Promise) {
+          hasAsyncResponse = true;
+          result.then(sendResponse);
+        }
+      }
+
+      return hasAsyncResponse;
+    });
+  }
+
   /**
    * Send message to background service worker
    */
@@ -131,24 +163,20 @@ export class MessagingService {
   }
 
   /**
-   * Listen for messages
+   * Listen for messages. Returns a function to remove the listener.
    */
   onMessage(
     callback: (
       message: Message,
       sender: chrome.runtime.MessageSender
     ) => void | Promise<unknown>
-  ): void {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      const result = callback(message, sender);
+  ): () => void {
+    this.messageListeners.add(callback);
 
-      if (result instanceof Promise) {
-        result.then(sendResponse);
-        return true; // Keep channel open for async response
-      }
-
-      return false;
-    });
+    // Return unsubscribe function
+    return () => {
+      this.messageListeners.delete(callback);
+    };
   }
 
   /**
@@ -201,12 +229,67 @@ export class MessagingService {
   }
 
   /**
+   * Get word examples from AI (for vocabulary detail view)
+   */
+  async getWordExamples(
+    word: string,
+    targetLanguage: string,
+    nativeLanguage: string,
+    count: number = 20
+  ): Promise<{ examples: string[] }> {
+    return this.sendToBackground({
+      type: 'GET_WORD_EXAMPLES',
+      payload: { word, targetLanguage, nativeLanguage, count },
+    });
+  }
+
+  /**
    * Seek video to a specific time
    */
   async seekToTime(time: number): Promise<void> {
     return this.sendToBackground({
       type: 'SEEK_TO_CUE',
       payload: { time },
+    });
+  }
+
+  /**
+   * Set video playback speed
+   */
+  async setPlaybackSpeed(speed: number): Promise<void> {
+    return this.sendToBackground({
+      type: 'SET_PLAYBACK_SPEED' as MessageType,
+      payload: { speed },
+    });
+  }
+
+  /**
+   * Set loop segment for current cue (shadowing practice)
+   */
+  async setLoopSegment(start: number, end: number): Promise<void> {
+    return this.sendToBackground({
+      type: 'SET_LOOP_SEGMENT' as MessageType,
+      payload: { start, end },
+    });
+  }
+
+  /**
+   * Clear loop segment
+   */
+  async clearLoopSegment(): Promise<void> {
+    return this.sendToBackground({
+      type: 'SET_LOOP_SEGMENT' as MessageType,
+      payload: null,
+    });
+  }
+
+  /**
+   * Get current video state
+   */
+  async getVideoState(): Promise<{ speed: number; isLooping: boolean }> {
+    return this.sendToBackground({
+      type: 'GET_VIDEO_STATE' as MessageType,
+      payload: {},
     });
   }
 

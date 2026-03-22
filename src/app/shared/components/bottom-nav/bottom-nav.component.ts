@@ -30,6 +30,28 @@ import { Router, RouterLink, RouterLinkActive, RouterModule } from '@angular/rou
         </svg>
       </a>
 
+      <!-- Reading Tab -->
+      <a
+        routerLink="/reading"
+        class="flex flex-col items-center p-2 rounded-xl transition-all"
+        [class.bg-indigo-100]="isActive('/reading')"
+        [class.dark:bg-indigo-900]="isActive('/reading')"
+        title="Reading"
+      >
+        <svg
+          class="w-6 h-6 transition-colors"
+          [class.text-indigo-600]="isActive('/reading')"
+          [class.dark:text-indigo-400]="isActive('/reading')"
+          [class.text-slate-500]="!isActive('/reading')"
+          [class.dark:text-slate-400]="!isActive('/reading')"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+      </a>
+
       <!-- Vocabulary Tab -->
       <a
         routerLink="/vocabulary"

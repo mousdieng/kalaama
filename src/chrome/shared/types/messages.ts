@@ -33,7 +33,19 @@ export type MessageType =
   | 'TEXT_TO_SPEECH'
   | 'SAVE_LESSON_PROGRESS'
   | 'GET_USER_PROGRESS'
-  | 'UPDATE_USER_PROGRESS';
+  | 'UPDATE_USER_PROGRESS'
+  // Reading mode messages
+  | 'TOGGLE_READING_MODE'
+  | 'ENABLE_READING_MODE'
+  | 'DISABLE_READING_MODE'
+  | 'GET_READING_MODE_STATUS'
+  | 'READING_MODE_STATUS'
+  | 'READING_PAGE_INFO'
+  | 'READING_WORD_CLICK'
+  | 'GET_GRAMMAR_ANALYSIS'
+  | 'ENABLE_GRAMMAR_HIGHLIGHTING'
+  | 'DISABLE_GRAMMAR_HIGHLIGHTING'
+  | 'GET_WORD_EXAMPLES';
 
 export interface Message<T = unknown> {
   type: MessageType;
@@ -49,8 +61,11 @@ export interface SaveWordPayload {
   contextSentence?: string;
   videoId?: string;
   videoTitle?: string;
+  // Full AI context from Gemini
   pronunciation?: string;
   partOfSpeech?: string;
+  definition?: string;
+  examples?: string[];
 }
 
 export interface TranslateWordPayload {
@@ -399,4 +414,91 @@ export interface GetConversationUnitPayload {
   unitId: string;
   targetLanguage: string;
   nativeLanguage: string;
+}
+
+// ============================================
+// Reading Mode Types
+// ============================================
+
+/**
+ * Reading mode settings
+ */
+export interface ReadingSettings {
+  enabled: boolean;
+  grammarHighlighting: boolean;
+  grammarStyle: 'color' | 'underline' | 'background';
+  showLegend: boolean;
+  targetLanguage: string;
+  nativeLanguage: string;
+}
+
+/**
+ * Page info payload sent from reading content script
+ */
+export interface ReadingPageInfoPayload {
+  title: string;
+  url: string;
+  language: string;
+}
+
+/**
+ * Reading mode status payload
+ */
+export interface ReadingModeStatusPayload {
+  enabled: boolean;
+  pageTitle?: string;
+  pageUrl?: string;
+}
+
+/**
+ * Word click payload from reading mode
+ */
+export interface ReadingWordClickPayload {
+  word: string;
+  sentence: string;
+  pageUrl: string;
+  pageTitle: string;
+}
+
+/**
+ * Grammar analysis request payload
+ */
+export interface GrammarAnalysisPayload {
+  text: string;
+  language: string;
+}
+
+/**
+ * Grammar word with part of speech
+ */
+export interface GrammarWord {
+  word: string;
+  pos: 'noun' | 'verb' | 'adjective' | 'adverb' | 'preposition' | 'pronoun' | 'conjunction' | 'article' | 'other';
+  start: number;
+  end: number;
+}
+
+/**
+ * Grammar analysis response
+ */
+export interface GrammarAnalysisResponse {
+  words: GrammarWord[];
+  language: string;
+}
+
+/**
+ * Get word examples payload
+ */
+export interface GetWordExamplesPayload {
+  word: string;
+  targetLanguage: string;
+  nativeLanguage: string;
+  count: number; // Number of examples to generate
+}
+
+/**
+ * Word examples response
+ */
+export interface WordExamplesResponse {
+  examples: string[];
 }

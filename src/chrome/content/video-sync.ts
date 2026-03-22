@@ -14,7 +14,7 @@ export class VideoSyncService {
   private currentCueIndex = -1;
   private intervalId: number | null = null;
   private callbacks: CueChangeCallback[] = [];
-  private readonly SYNC_INTERVAL_MS = 100; // Sync every 100ms
+  private readonly SYNC_INTERVAL_MS = 50; // Sync every 50ms for better responsiveness
 
   constructor(video: HTMLVideoElement, subtitles: ParsedSubtitle[]) {
     this.video = video;
@@ -120,8 +120,27 @@ export class VideoSyncService {
     }
   }
 
+  /**
+   * Find the cue at the given time, with gap-tolerant matching.
+   * Handles gaps between cues (common in auto-generated subtitles).
+   */
   private findCueAt(time: number): number {
-    // Binary search for efficiency
+    if (this.subtitles.length === 0) return -1;
+
+    const first = this.subtitles[0];
+    const last = this.subtitles[this.subtitles.length - 1];
+
+    // Before first cue - show first cue if within 0.5s lookahead
+    if (time < first.startTime) {
+      return time >= first.startTime - 0.5 ? 0 : -1;
+    }
+
+    // After last cue - keep showing last cue for 0.5s after it ends
+    if (time > last.endTime) {
+      return time <= last.endTime + 0.5 ? this.subtitles.length - 1 : -1;
+    }
+
+    // Binary search with gap handling
     let low = 0;
     let high = this.subtitles.length - 1;
 
@@ -129,11 +148,33 @@ export class VideoSyncService {
       const mid = Math.floor((low + high) / 2);
       const cue = this.subtitles[mid];
 
+      // Direct hit - time is within this cue
       if (time >= cue.startTime && time <= cue.endTime) {
         return mid;
-      } else if (time < cue.startTime) {
+      }
+
+      if (time < cue.startTime) {
+        // Time is before this cue - check if we're in a gap
+        if (mid > 0) {
+          const prevCue = this.subtitles[mid - 1];
+          // If time is between prevCue.endTime and cue.startTime (in a gap)
+          if (time > prevCue.endTime && time < cue.startTime) {
+            const gapSize = cue.startTime - prevCue.endTime;
+            const timeToPrev = time - prevCue.endTime;
+            const timeToNext = cue.startTime - time;
+
+            // For small gaps (< 1 second), prefer showing the upcoming cue
+            // This makes captions appear slightly before speech (more natural for reading)
+            if (gapSize < 1.0) {
+              return timeToNext < 0.3 ? mid : mid - 1;
+            }
+            // For larger gaps, stay with previous cue briefly, then go blank
+            return timeToPrev < 0.3 ? mid - 1 : -1;
+          }
+        }
         high = mid - 1;
       } else {
+        // time > cue.endTime
         low = mid + 1;
       }
     }

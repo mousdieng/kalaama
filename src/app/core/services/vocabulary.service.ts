@@ -20,6 +20,13 @@ export interface VocabularyItem {
   review_count: number;
   created_at: string;
   updated_at?: string;
+  // Full AI context from Gemini
+  definition?: string;
+  part_of_speech?: string;
+  examples?: string[]; // Initial examples (2-3 from word context)
+  pronunciation?: string;
+  // AI-generated detailed examples (10-20 examples)
+  aiExamples?: string[];
 }
 
 @Injectable({
@@ -35,6 +42,11 @@ export class VocabularyService {
 
   vocabulary$ = this.vocabularySubject.asObservable();
   loading$ = this.loadingSubject.asObservable();
+
+  // Getter to access current vocabulary value
+  get currentVocabulary(): VocabularyItem[] {
+    return this.vocabularySubject.value;
+  }
 
   /**
    * Load vocabulary from chrome.storage.local
@@ -101,6 +113,13 @@ export class VocabularyService {
       review_count: existingIndex >= 0 ? vocabulary[existingIndex].review_count : 0,
       created_at: existingIndex >= 0 ? vocabulary[existingIndex].created_at : new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      // Full AI context from Gemini
+      definition: word.definition,
+      part_of_speech: word.part_of_speech,
+      examples: word.examples,
+      pronunciation: word.pronunciation,
+      // Preserve existing AI examples if updating
+      aiExamples: existingIndex >= 0 ? vocabulary[existingIndex].aiExamples : undefined,
     };
 
     if (existingIndex >= 0) {
@@ -151,6 +170,27 @@ export class VocabularyService {
 
       // Update local state
       this.vocabularySubject.next([...vocabulary]);
+    }
+  }
+
+  /**
+   * Update word with AI examples (chrome.storage.local)
+   */
+  async updateAIExamples(wordId: string, aiExamples: string[]): Promise<void> {
+    const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
+
+    const index = vocabulary.findIndex((v: VocabularyItem) => v.id === wordId);
+
+    if (index >= 0) {
+      vocabulary[index].aiExamples = aiExamples;
+      vocabulary[index].updated_at = new Date().toISOString();
+
+      await chrome.storage.local.set({ vocabulary });
+
+      // Update local state
+      this.vocabularySubject.next([...vocabulary]);
+
+      console.log('[Kalaama] AI examples saved for word:', vocabulary[index].word);
     }
   }
 

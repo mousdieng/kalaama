@@ -9,8 +9,9 @@
     "start": "ng serve",
     "build": "npm run build:angular && npm run build:chrome && npm run copy:assets",
     "build:angular": "ng build",
-    "build:chrome": "npm run build:content && npm run build:background",
+    "build:chrome": "npm run build:content && npm run build:reading && npm run build:background",
     "build:content": "esbuild src/chrome/content/content-script.ts --bundle --outfile=dist/content/content-script.js --format=iife --target=chrome100",
+    "build:reading": "esbuild src/chrome/content/reading-content-script.ts --bundle --outfile=dist/content/reading-content-script.js --format=iife --target=chrome100",
     "build:background": "esbuild src/chrome/background/service-worker.ts --bundle --outfile=dist/background/service-worker.js --format=esm --target=chrome100",
     "watch:content": "esbuild src/chrome/content/content-script.ts --bundle --outfile=dist/content/content-script.js --format=iife --target=chrome100 --watch",
     "watch:background": "esbuild src/chrome/background/service-worker.ts --bundle --outfile=dist/background/service-worker.js --format=esm --target=chrome100 --watch",
@@ -37,6 +38,7 @@
     "@angular/platform-browser-dynamic": "^18.0.0",
     "@angular/router": "^18.0.0",
     "@supabase/supabase-js": "^2.43.0",
+    "pdfjs-dist": "^3.11.174",
     "rxjs": "~7.8.0",
     "tslib": "^2.6.0",
     "zone.js": "~0.14.0"

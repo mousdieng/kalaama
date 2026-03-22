@@ -30,6 +30,13 @@ export const routes: Routes = [
       ),
   },
   {
+    path: 'reading',
+    loadComponent: () =>
+      import('./features/reading/reading.component').then(
+        (m) => m.ReadingComponent
+      ),
+  },
+  {
     path: 'learn',
     loadComponent: () =>
       import('./features/learn/learn.component').then(

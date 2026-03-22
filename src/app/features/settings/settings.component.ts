@@ -223,8 +223,77 @@ import { SettingsService, UserSettings } from '../../core/services/settings.serv
             <span>{{ aiProvider | titlecase }} API key configured</span>
           </div>
 
+          <!-- AI Examples Count -->
+          <div>
+            <label class="block text-sm text-slate-500 mb-1">
+              AI Examples Count: {{ settings.ai_examples_count }}
+            </label>
+            <input
+              type="range"
+              [(ngModel)]="settings.ai_examples_count"
+              (change)="saveSettings()"
+              min="10"
+              max="20"
+              step="1"
+              class="w-full"
+            />
+            <p class="text-xs text-slate-400 mt-1">
+              Number of example sentences to generate for vocabulary words
+            </p>
+          </div>
+
           <p class="text-xs text-slate-500">
             AI powers word definitions, language tutoring, and voice conversation features.
+          </p>
+        </div>
+      </div>
+
+      <!-- Reading Mode Settings -->
+      <div class="card">
+        <h2 class="font-semibold mb-3">Reading Mode</h2>
+
+        <div class="space-y-3">
+          <label class="flex items-center justify-between">
+            <div>
+              <span class="text-sm">Grammar Highlighting</span>
+              <p class="text-xs text-slate-400">Color-code words by part of speech</p>
+            </div>
+            <input
+              type="checkbox"
+              [(ngModel)]="readingSettings.grammar_highlighting"
+              (change)="saveReadingSettings()"
+              class="w-5 h-5 rounded text-primary-500"
+            />
+          </label>
+
+          <div *ngIf="readingSettings.grammar_highlighting">
+            <label class="block text-sm text-slate-500 mb-1">Highlight Style</label>
+            <select
+              [(ngModel)]="readingSettings.grammar_style"
+              (change)="saveReadingSettings()"
+              class="input"
+            >
+              <option value="color">Text Color</option>
+              <option value="underline">Underline</option>
+              <option value="background">Background</option>
+            </select>
+          </div>
+
+          <label class="flex items-center justify-between">
+            <div>
+              <span class="text-sm">Show Grammar Legend</span>
+              <p class="text-xs text-slate-400">Display color meanings on page</p>
+            </div>
+            <input
+              type="checkbox"
+              [(ngModel)]="readingSettings.grammar_legend"
+              (change)="saveReadingSettings()"
+              class="w-5 h-5 rounded text-primary-500"
+            />
+          </label>
+
+          <p class="text-xs text-slate-500">
+            Reading mode lets you click any word on web pages to translate it and save to vocabulary.
           </p>
         </div>
       </div>
@@ -318,6 +387,7 @@ export class SettingsComponent implements OnInit {
     highlight_unknown_words: true,
     show_pronunciation: true,
     theme: 'auto',
+    ai_examples_count: 15,
   };
 
   // API Keys
@@ -333,6 +403,13 @@ export class SettingsComponent implements OnInit {
   voiceSettings = {
     voiceId: 'EXAVITQu4vr4xnSDxMaL', // Sarah - default voice
     speed: 1.0,
+  };
+
+  // Reading mode settings
+  readingSettings = {
+    grammar_highlighting: false,
+    grammar_style: 'color' as 'color' | 'underline' | 'background',
+    grammar_legend: true,
   };
 
   languages = [
@@ -373,6 +450,7 @@ export class SettingsComponent implements OnInit {
         'elevenlabs_api_key',
         'ai_provider',
         'voice_settings',
+        'reading_settings',
       ]);
 
       if (result['gemini_api_key']) {
@@ -393,8 +471,27 @@ export class SettingsComponent implements OnInit {
       if (result['voice_settings']) {
         this.voiceSettings = { ...this.voiceSettings, ...result['voice_settings'] };
       }
+      if (result['reading_settings']) {
+        this.readingSettings = { ...this.readingSettings, ...result['reading_settings'] };
+      }
     } catch (error) {
       console.warn('[Settings] Failed to load API keys:', error);
+    }
+  }
+
+  async saveReadingSettings(): Promise<void> {
+    try {
+      await chrome.storage.local.set({ reading_settings: this.readingSettings });
+      // Also update the main settings object for content script consumption
+      await this.settingsService.updateSettings({
+        ...this.settings,
+        grammar_highlighting: this.readingSettings.grammar_highlighting,
+        grammar_style: this.readingSettings.grammar_style,
+        grammar_legend: this.readingSettings.grammar_legend,
+      } as any);
+      console.log('[Settings] Reading settings saved:', this.readingSettings);
+    } catch (error) {
+      console.error('[Settings] Failed to save reading settings:', error);
     }
   }
 
