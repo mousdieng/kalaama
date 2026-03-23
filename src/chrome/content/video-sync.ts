@@ -123,6 +123,7 @@ export class VideoSyncService {
   /**
    * Find the cue at the given time, with gap-tolerant matching.
    * Handles gaps between cues (common in auto-generated subtitles).
+   * Keeps showing current cue until next cue starts (no blank gaps).
    */
   private findCueAt(time: number): number {
     if (this.subtitles.length === 0) return -1;
@@ -135,9 +136,9 @@ export class VideoSyncService {
       return time >= first.startTime - 0.5 ? 0 : -1;
     }
 
-    // After last cue - keep showing last cue for 0.5s after it ends
+    // After last cue - keep showing last cue indefinitely
     if (time > last.endTime) {
-      return time <= last.endTime + 0.5 ? this.subtitles.length - 1 : -1;
+      return this.subtitles.length - 1;
     }
 
     // Binary search with gap handling
@@ -159,17 +160,8 @@ export class VideoSyncService {
           const prevCue = this.subtitles[mid - 1];
           // If time is between prevCue.endTime and cue.startTime (in a gap)
           if (time > prevCue.endTime && time < cue.startTime) {
-            const gapSize = cue.startTime - prevCue.endTime;
-            const timeToPrev = time - prevCue.endTime;
-            const timeToNext = cue.startTime - time;
-
-            // For small gaps (< 1 second), prefer showing the upcoming cue
-            // This makes captions appear slightly before speech (more natural for reading)
-            if (gapSize < 1.0) {
-              return timeToNext < 0.3 ? mid : mid - 1;
-            }
-            // For larger gaps, stay with previous cue briefly, then go blank
-            return timeToPrev < 0.3 ? mid - 1 : -1;
+            // Stay with previous cue until next cue starts
+            return mid - 1;
           }
         }
         high = mid - 1;
@@ -179,7 +171,8 @@ export class VideoSyncService {
       }
     }
 
-    return -1;
+    // If we end up here, keep the current cue (shouldn't happen in normal flow)
+    return this.currentCueIndex >= 0 ? this.currentCueIndex : -1;
   }
 
   private emitCueChange(cue: ParsedSubtitle | null): void {

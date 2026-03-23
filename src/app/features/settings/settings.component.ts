@@ -388,6 +388,7 @@ export class SettingsComponent implements OnInit {
     show_pronunciation: true,
     theme: 'auto',
     ai_examples_count: 15,
+    repeat_count: 1,
   };
 
   // API Keys

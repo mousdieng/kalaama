@@ -86,54 +86,7 @@ import { SettingsService } from '../../../core/services/settings.service';
               (click)="selectWord(word)"
             >
               <!-- Language badge in top-right corner -->
-              <span class="absolute top-2 right-2 text-xs px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 rounded-full font-medium">
-                {{ word.language }}
-              </span>
-
-              <!-- Word -->
-              <div class="mb-2 pr-12">
-                <h3 class="font-bold text-xl text-slate-900 dark:text-white">
-                  {{ word.word }}
-                </h3>
-              </div>
-
-              <!-- Translation -->
-              <div class="mb-3">
-                <p class="text-base text-slate-700 dark:text-slate-300">
-                  {{ word.translation }}
-                </p>
-              </div>
-
-              <!-- Part of speech (if available) -->
-              @if (word.part_of_speech) {
-                <div class="mb-2">
-                  <span class="text-xs px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-400">
-                    {{ word.part_of_speech }}
-                  </span>
-                </div>
-              }
-
-              <!-- Context preview (shortened) -->
-              @if (word.context_sentence) {
-                <div class="text-sm text-slate-500 dark:text-slate-400 italic mb-3">
-                  "{{ truncateText(word.context_sentence, 80) }}"
-                </div>
-              }
-
-              <!-- Bottom row: Mastery + Delete -->
-              <div class="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-700">
-                <div class="flex items-center gap-2">
-                  <span class="text-xs text-slate-500">Mastery</span>
-                  <div class="flex gap-1">
-                    @for (i of [0,1,2,3,4]; track i) {
-                      <div
-                        class="w-2.5 h-2.5 rounded-full transition-colors"
-                        [class.bg-indigo-500]="i < word.mastery_level"
-                        [class.bg-slate-300]="i >= word.mastery_level"
-                      ></div>
-                    }
-                  </div>
-                </div>
+              <div class="absolute top-2 right-2 text-xs px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 rounded-full font-medium">
                 <button
                   (click)="deleteWord($event, word)"
                   class="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-red-500 p-1"
@@ -144,6 +97,38 @@ import { SettingsService } from '../../../core/services/settings.service';
                   </svg>
                 </button>
               </div>
+
+              <!-- Word -->
+              <div class="mb-2 pr-12">
+                <h3 class="font-bold text-xl text-slate-900 dark:text-white">
+                  {{ word.word }}
+                </h3>
+              </div>
+
+              <!-- Translation -->
+              <div className=" flex gap-2">
+                <div class="mb-3">
+                  <p class="text-base text-slate-700 dark:text-slate-300">
+                    {{ word.translation }}
+                  </p>
+                </div>
+
+                <!-- Part of speech (if available) -->
+                @if (word.part_of_speech) {
+                  <div class="mb-2">
+                    <span class="text-xs px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-400">
+                      {{ word.part_of_speech }}
+                    </span>
+                  </div>
+                }
+              </div>
+
+              <!-- Context preview (shortened) -->
+              @if (word.context_sentence) {
+                <div class="text-sm text-slate-500 dark:text-slate-400 italic mb-3">
+                  "{{ truncateText(word.context_sentence, 80) }}"
+                </div>
+              }
             </div>
           }
         </div>
@@ -152,7 +137,8 @@ import { SettingsService } from '../../../core/services/settings.service';
       <!-- Word Detail Modal -->
       @if (selectedWord) {
         <div
-          class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in mt-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in"
+          style="margin-top: 0px !important;"
           (click)="selectedWord = null"
         >
           <div

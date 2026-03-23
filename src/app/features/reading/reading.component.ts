@@ -68,7 +68,8 @@ export class ReadingComponent implements OnInit, OnDestroy {
     highlight_unknown_words: true,
     show_pronunciation: true,
     theme: 'auto',
-    ai_examples_count: 15
+    ai_examples_count: 15,
+    repeat_count: 1
   };
   private settingsLoaded = false;
   private settingsPromise: Promise<void> | null = null;

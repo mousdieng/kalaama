@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, inject, NgZone, ViewChild, ElementRef, HostListener } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, NgZone, ViewChild, ElementRef, HostListener, ChangeDetectionStrategy, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subscription } from 'rxjs';
@@ -32,6 +32,7 @@ interface VideoInfo {
   standalone: true,
   imports: [CommonModule, FormsModule],
   templateUrl: './captions.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     :host {
       display: block;
@@ -47,6 +48,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   private settingsService = inject(SettingsService);
   private vocabularyService = inject(VocabularyService);
   private ngZone = inject(NgZone);
+  private cdr = inject(ChangeDetectorRef);
 
   isConnected = false;
   hasCaptions = false;
@@ -60,6 +62,12 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   translatedCaptions: SubtitleCue[] = [];
   currentCueIndex = -1;
   currentCue: CaptionCue | null = null;
+
+  // Translation cache: maps source caption index to its translation text
+  private translationCache: Map<number, string> = new Map();
+
+  // Virtual scrolling - only render captions within this window
+  readonly VISIBLE_WINDOW = 15; // Show 15 captions before and after current
 
   // Caption translation (full line)
   captionTranslation: string | null = null;
@@ -82,8 +90,8 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   aiExamples: string[] = [];
   isLoadingAIExamples = false;
 
-  // Settings
-  private settings: UserSettings = {
+  // Settings (public for template access)
+  settings: UserSettings = {
     target_language: 'de',
     native_language: 'fr',
     subtitle_font_size: 18,
@@ -93,7 +101,8 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     highlight_unknown_words: true,
     show_pronunciation: true,
     theme: 'auto',
-    ai_examples_count: 15
+    ai_examples_count: 15,
+    repeat_count: 1
   };
   private settingsLoaded = false;
   private settingsPromise: Promise<void> | null = null;
@@ -109,6 +118,27 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   playbackSpeed = 1.0;
   isLooping = false;
   speedOptions = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+  // Video control menu state
+  showControlMenu = false;
+  repeatCount = 1;
+  repeatOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  selectedSubtitleLanguage = '';
+  availableSubtitleLanguages: { code: string; name: string }[] = [];
+  availableTranslationLanguages = [
+    { code: 'en', name: 'English' },
+    { code: 'fr', name: 'French' },
+    { code: 'es', name: 'Spanish' },
+    { code: 'de', name: 'German' },
+    { code: 'it', name: 'Italian' },
+    { code: 'pt', name: 'Portuguese' },
+    { code: 'ru', name: 'Russian' },
+    { code: 'zh', name: 'Chinese' },
+    { code: 'ja', name: 'Japanese' },
+    { code: 'ko', name: 'Korean' },
+    { code: 'ar', name: 'Arabic' },
+    { code: 'wo', name: 'Wolof' }
+  ];
 
   async ngOnInit() {
     // IMPORTANT: Load settings FIRST and wait for them
@@ -132,6 +162,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       // Run inside Angular zone to trigger change detection
       this.ngZone.run(() => {
         this.handleMessage(message);
+        this.cdr.markForCheck();
       });
     });
 
@@ -165,6 +196,8 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       const loadedSettings = await this.settingsService.waitForReady();
       if (loadedSettings) {
         this.settings = { ...this.settings, ...loadedSettings };
+        // Initialize repeat count from settings
+        this.repeatCount = this.settings.repeat_count || 1;
         console.log('[Captions] Settings loaded:', this.settings);
       }
     } catch (error) {
@@ -241,11 +274,13 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     console.log('[Captions] ==== RECEIVED ALL_CAPTIONS ====');
     console.log('[Captions] Captions count:', payload.captions?.length || 0);
     console.log('[Captions] Translated count:', payload.translatedCaptions?.length || 0);
-    console.log('[Captions] First translated:', payload.translatedCaptions?.[0]);
 
     this.allCaptions = payload.captions || [];
     this.translatedCaptions = payload.translatedCaptions || [];
     this.hasCaptions = this.allCaptions.length > 0;
+
+    // Build translation cache for efficient lookup
+    this.buildTranslationCache();
 
     // Scroll to current cue after DOM updates
     setTimeout(() => this.scrollToCurrentCue(), 0);
@@ -308,6 +343,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
 
     this.lastTranslatedText = text;
     this.isTranslatingCaption = true;
+    this.cdr.markForCheck();
 
     try {
       const result = await this.messagingService.translateWord(
@@ -323,6 +359,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       this.captionTranslation = null;
     } finally {
       this.isTranslatingCaption = false;
+      this.cdr.markForCheck();
     }
   }
 
@@ -337,11 +374,25 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     hasCaptions: boolean;
     isAutoGenerated?: boolean;
     translationLanguage?: string | null;
+    language?: string;
+    availableLanguages?: string[];
   }) {
     this.isConnected = status.connected;
     this.hasCaptions = status.hasCaptions;
     this.isAutoGenerated = status.isAutoGenerated ?? false;
     this.translationLanguage = status.translationLanguage || null;
+
+    // Update available subtitle languages
+    if (status.availableLanguages && status.availableLanguages.length > 0) {
+      this.availableSubtitleLanguages = status.availableLanguages.map(code => ({
+        code,
+        name: this.getLanguageName(code)
+      }));
+      // Set current subtitle language
+      if (status.language) {
+        this.selectedSubtitleLanguage = status.language;
+      }
+    }
 
     if (status.connected) {
       if (status.hasCaptions) {
@@ -363,37 +414,260 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     return text.split(/\s+/).map((word, index) => ({ word, index }));
   }
 
-  // Get translation for a caption by matching start time
+  // TrackBy function for ngFor optimization
+  trackByIndex(index: number, item: { caption: SubtitleCue; originalIndex: number }): number {
+    return item.originalIndex;
+  }
+
+  // Get translation for a caption using pre-built cache
   getTranslationForCaption(captionIndex: number): string | null {
-    if (captionIndex < 0 || captionIndex >= this.allCaptions.length) {
-      return null;
+    return this.translationCache.get(captionIndex) || null;
+  }
+
+  // Build translation cache mapping each source caption to its translation
+  private buildTranslationCache(): void {
+    this.translationCache.clear();
+
+    if (this.allCaptions.length === 0 || this.translatedCaptions.length === 0) {
+      return;
     }
-    if (this.translatedCaptions.length === 0) {
-      return null;
+
+    console.log('[Captions] ========== BUILDING TRANSLATION CACHE ==========');
+    console.log('[Captions] Source captions:', this.allCaptions.length);
+    console.log('[Captions] Translated captions:', this.translatedCaptions.length);
+
+    // Strategy 1: If same count, use direct 1:1 index mapping
+    if (this.allCaptions.length === this.translatedCaptions.length) {
+      console.log('[Captions] Using 1:1 index mapping');
+      for (let i = 0; i < this.allCaptions.length; i++) {
+        this.translationCache.set(i, this.translatedCaptions[i].text);
+      }
+      this.logFullMapping();
+      return;
     }
 
-    const caption = this.allCaptions[captionIndex];
-    const startTime = caption.startTime;
-
-    // Find matching translated caption by time
-    // Try exact time match first
-    let match = this.translatedCaptions.find(
-      t => startTime >= t.startTime && startTime <= t.endTime
-    );
-
-    // If no exact match, find nearest
-    if (!match) {
-      let minDistance = Infinity;
-      for (const t of this.translatedCaptions) {
-        const distance = Math.abs(t.startTime - startTime);
-        if (distance < minDistance) {
-          minDistance = distance;
-          match = t;
-        }
+    // Strategy 2: For each source caption, find its translation
+    // Handle both: one trans covers multiple sources, and one source needs multiple trans
+    for (let srcIdx = 0; srcIdx < this.allCaptions.length; srcIdx++) {
+      const src = this.allCaptions[srcIdx];
+      const translation = this.findTranslationForSource(src, srcIdx);
+      if (translation) {
+        this.translationCache.set(srcIdx, translation);
       }
     }
 
-    return match?.text || null;
+    console.log('[Captions] Translation cache built:', this.translationCache.size, 'entries');
+    this.logFullMapping();
+  }
+
+  // Find the best translation for a source caption
+  private findTranslationForSource(src: SubtitleCue, srcIdx: number): string | null {
+    const srcStart = src.startTime;
+    const srcEnd = src.endTime;
+    const srcMid = (srcStart + srcEnd) / 2;
+
+    // Find all translations that overlap with this source caption
+    const overlapping: { trans: SubtitleCue; idx: number; overlap: number }[] = [];
+
+    for (let i = 0; i < this.translatedCaptions.length; i++) {
+      const trans = this.translatedCaptions[i];
+      const overlapStart = Math.max(srcStart, trans.startTime);
+      const overlapEnd = Math.min(srcEnd, trans.endTime);
+      const overlap = overlapEnd - overlapStart;
+
+      if (overlap > 0.05) { // At least 50ms overlap
+        overlapping.push({ trans, idx: i, overlap });
+      }
+    }
+
+    // Case 1: Exactly one translation overlaps
+    if (overlapping.length === 1) {
+      const { trans } = overlapping[0];
+      const sourcesInTrans = this.countSourcesInTranslation(trans);
+
+      if (sourcesInTrans <= 1) {
+        return trans.text;
+      }
+
+      // Multiple sources share this translation - extract our portion
+      const position = this.getPositionInTranslation(srcIdx, trans);
+      return this.extractPortion(trans.text, position, sourcesInTrans);
+    }
+
+    // Case 2: Multiple translations overlap - combine relevant portions
+    if (overlapping.length > 1) {
+      overlapping.sort((a, b) => a.trans.startTime - b.trans.startTime);
+      const parts: string[] = [];
+
+      for (const { trans } of overlapping) {
+        const sourcesInTrans = this.countSourcesInTranslation(trans);
+        if (sourcesInTrans <= 1) {
+          parts.push(trans.text);
+        } else {
+          const pos = this.getPositionInTranslation(srcIdx, trans);
+          const portion = this.extractPortion(trans.text, pos, sourcesInTrans);
+          if (portion) parts.push(portion);
+        }
+      }
+
+      return this.combineUniqueParts(parts);
+    }
+
+    // Case 3: No overlap - find nearest with threshold
+    let nearest: SubtitleCue | null = null;
+    let minDist = Infinity;
+
+    for (const trans of this.translatedCaptions) {
+      const transMid = (trans.startTime + trans.endTime) / 2;
+      const dist = Math.abs(srcMid - transMid);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = trans;
+      }
+    }
+
+    if (nearest && minDist <= 1.5) {
+      const sourcesInNearest = this.countSourcesInTranslation(nearest);
+      if (sourcesInNearest <= 1) {
+        return nearest.text;
+      }
+      const pos = this.getPositionInTranslation(srcIdx, nearest);
+      return this.extractPortion(nearest.text, pos, sourcesInNearest);
+    }
+
+    return null;
+  }
+
+  // Count how many source captions overlap with a translation
+  private countSourcesInTranslation(trans: SubtitleCue): number {
+    let count = 0;
+    for (const src of this.allCaptions) {
+      const overlapStart = Math.max(src.startTime, trans.startTime);
+      const overlapEnd = Math.min(src.endTime, trans.endTime);
+      if (overlapEnd - overlapStart > 0.05) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  // Get the position (0-indexed) of a source caption within overlapping sources of a translation
+  private getPositionInTranslation(srcIdx: number, trans: SubtitleCue): number {
+    let position = 0;
+    for (let i = 0; i < srcIdx; i++) {
+      const src = this.allCaptions[i];
+      const overlapStart = Math.max(src.startTime, trans.startTime);
+      const overlapEnd = Math.min(src.endTime, trans.endTime);
+      if (overlapEnd - overlapStart > 0.05) {
+        position++;
+      }
+    }
+    return position;
+  }
+
+  // Combine multiple text parts, removing duplicates
+  private combineUniqueParts(parts: string[]): string {
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0];
+
+    const unique: string[] = [];
+    for (const part of parts) {
+      if (part && !unique.includes(part)) {
+        unique.push(part);
+      }
+    }
+    return unique.join(' ');
+  }
+
+  // Log the full subtitle-translation mapping for debugging
+  private logFullMapping(): void {
+    const mapping: { index: number; time: string; subtitle: string; translation: string }[] = [];
+
+    for (let i = 0; i < this.allCaptions.length; i++) {
+      const cap = this.allCaptions[i];
+      const trans = this.translationCache.get(i) || '(no translation)';
+      mapping.push({
+        index: i,
+        time: `${cap.startTime.toFixed(2)}-${cap.endTime.toFixed(2)}`,
+        subtitle: cap.text,
+        translation: trans
+      });
+    }
+
+    console.log('[Captions] ========== FULL MAPPING ==========');
+    console.table(mapping);
+
+    // Also log as copyable JSON
+    console.log('[Captions] JSON mapping (copy this):');
+    console.log(JSON.stringify(mapping.map(m => ({ subtitle: m.subtitle, translation: m.translation })), null, 2));
+
+    // Log raw timing data for analysis
+    console.log('[Captions] ========== RAW SOURCE CAPTIONS ==========');
+    console.table(this.allCaptions.slice(0, 50).map((c, i) => ({
+      idx: i,
+      start: c.startTime.toFixed(2),
+      end: c.endTime.toFixed(2),
+      text: c.text.substring(0, 60)
+    })));
+
+    console.log('[Captions] ========== RAW TRANSLATED CAPTIONS ==========');
+    console.table(this.translatedCaptions.slice(0, 50).map((c, i) => ({
+      idx: i,
+      start: c.startTime.toFixed(2),
+      end: c.endTime.toFixed(2),
+      text: c.text.substring(0, 60)
+    })));
+  }
+
+  // Extract a portion of text for a specific position among multiple captions
+  private extractPortion(text: string, position: number, totalParts: number): string {
+    if (totalParts <= 1 || position < 0) return text;
+
+    // Strategy 1: Split by sentences (. ! ? etc.)
+    const sentences = text
+      .split(/(?<=[.!?։。！？])\s*/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    if (sentences.length >= totalParts) {
+      const perPart = Math.ceil(sentences.length / totalParts);
+      const start = position * perPart;
+      const end = Math.min(start + perPart, sentences.length);
+      if (start < sentences.length) {
+        return sentences.slice(start, end).join(' ');
+      }
+      return '';
+    }
+
+    // Strategy 2: Split by clauses (, ; : – —)
+    const clauses = text
+      .split(/(?<=[,;:–—])\s*/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    if (clauses.length >= totalParts) {
+      const perPart = Math.ceil(clauses.length / totalParts);
+      const start = position * perPart;
+      const end = Math.min(start + perPart, clauses.length);
+      if (start < clauses.length) {
+        return clauses.slice(start, end).join(' ');
+      }
+      return '';
+    }
+
+    // Strategy 3: Split by words proportionally
+    const words = text.split(/\s+/);
+    if (words.length >= totalParts) {
+      const perPart = Math.ceil(words.length / totalParts);
+      const start = position * perPart;
+      const end = Math.min(start + perPart, words.length);
+      if (start < words.length) {
+        return words.slice(start, end).join(' ');
+      }
+    }
+
+    // Fallback: first position gets full text, others empty
+    return position === 0 ? text : '';
   }
 
   // Navigation methods
@@ -501,6 +775,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       }
     } finally {
       this.isTranslating = false;
+      this.cdr.markForCheck();
     }
 
     // Fetch AI examples (10-20 examples) in parallel
@@ -595,6 +870,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       this.aiExamples = [];
     } finally {
       this.isLoadingAIExamples = false;
+      this.cdr.markForCheck();
     }
   }
 
@@ -613,6 +889,32 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   // Learning mode getter
   get isLearningMode(): boolean {
     return this.settings.auto_pause_after_caption;
+  }
+
+  // Virtual scrolling - get visible captions around current index
+  get visibleCaptions(): { caption: SubtitleCue; originalIndex: number }[] {
+    if (this.allCaptions.length === 0) return [];
+
+    const centerIndex = Math.max(0, this.currentCueIndex);
+    const start = Math.max(0, centerIndex - this.VISIBLE_WINDOW);
+    const end = Math.min(this.allCaptions.length, centerIndex + this.VISIBLE_WINDOW + 1);
+
+    return this.allCaptions.slice(start, end).map((caption, i) => ({
+      caption,
+      originalIndex: start + i
+    }));
+  }
+
+  // Check if we're at the start (to show "more above" indicator)
+  get hasMoreAbove(): boolean {
+    const centerIndex = Math.max(0, this.currentCueIndex);
+    return centerIndex > this.VISIBLE_WINDOW;
+  }
+
+  // Check if we're at the end (to show "more below" indicator)
+  get hasMoreBelow(): boolean {
+    const centerIndex = Math.max(0, this.currentCueIndex);
+    return centerIndex + this.VISIBLE_WINDOW < this.allCaptions.length - 1;
   }
 
   // Video control methods
@@ -634,6 +936,49 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       await this.messagingService.setLoopSegment(cue.startTime, cue.endTime);
       this.isLooping = true;
     }
+  }
+
+  // Video control menu methods
+  toggleControlMenu(): void {
+    this.showControlMenu = !this.showControlMenu;
+  }
+
+  async toggleAutoPause(): Promise<void> {
+    this.settings.auto_pause_after_caption = !this.settings.auto_pause_after_caption;
+    await this.settingsService.updateSettings({
+      auto_pause_after_caption: this.settings.auto_pause_after_caption
+    });
+    // Notify content script of auto-pause state change
+    try {
+      await this.messagingService.setAutoPause(this.settings.auto_pause_after_caption);
+    } catch (error) {
+      console.warn('[Captions] Failed to set auto-pause:', error);
+    }
+  }
+
+  async setRepeatCount(count: number): Promise<void> {
+    this.repeatCount = count;
+    this.settings.repeat_count = count;
+    await this.settingsService.updateSettings({ repeat_count: count });
+    try {
+      await this.messagingService.setRepeatCount(count);
+    } catch (error) {
+      console.warn('[Captions] Failed to set repeat count:', error);
+    }
+  }
+
+  async changeSubtitleLanguage(langCode: string): Promise<void> {
+    this.selectedSubtitleLanguage = langCode;
+    try {
+      await this.messagingService.changeSubtitleTrack(langCode);
+    } catch (error) {
+      console.warn('[Captions] Failed to change subtitle language:', error);
+    }
+  }
+
+  async changeTranslationLanguage(langCode: string): Promise<void> {
+    this.settings.native_language = langCode;
+    await this.settingsService.updateSettings({ native_language: langCode });
   }
 
   // Keyboard shortcuts

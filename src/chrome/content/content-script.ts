@@ -68,6 +68,17 @@ class KalaamaContentScript {
   private isListening = false;
   private voiceLanguage = 'de-DE';
 
+  // Loop control
+  private loopInterval: number | null = null;
+  private loopStart: number = 0;
+  private loopEnd: number = 0;
+
+  // Repeat count for captions
+  private repeatCount: number = 1;
+  private currentRepeatIndex: number = 0;
+  private lastCueIndex: number = -1;
+  private autoPauseEnabled: boolean = false;
+
   // Language code mapping
   private languageMap: Record<string, string> = {
     en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
@@ -230,6 +241,14 @@ class KalaamaContentScript {
       if (response?.native_language) {
         this.nativeLanguage = response.native_language;
         console.log('[Kalaama] Native language:', this.nativeLanguage);
+      }
+      if (response?.auto_pause_after_caption !== undefined) {
+        this.autoPauseEnabled = response.auto_pause_after_caption;
+        console.log('[Kalaama] Auto-pause enabled:', this.autoPauseEnabled);
+      }
+      if (response?.repeat_count !== undefined) {
+        this.repeatCount = response.repeat_count;
+        console.log('[Kalaama] Repeat count:', this.repeatCount);
       }
     } catch (error) {
       console.warn('[Kalaama] Failed to load settings:', error);
@@ -406,6 +425,33 @@ class KalaamaContentScript {
       if (video) {
         this.videoSync = new VideoSyncService(video, this.subtitles);
         this.videoSync.onCueChange((cue, cueIndex) => {
+          // Get fresh video reference
+          const currentVideo = document.querySelector('video.html5-main-video') as HTMLVideoElement;
+
+          // Handle repeat logic - check if we moved to a NEW cue
+          // IMPORTANT: Repeat is disabled when auto-pause is enabled (they conflict)
+          if (cueIndex >= 0 && cueIndex !== this.lastCueIndex && this.lastCueIndex >= 0) {
+            // We just moved from lastCueIndex to cueIndex
+            // Check if we need to repeat the previous cue (only if auto-pause is OFF)
+            if (!this.autoPauseEnabled && this.repeatCount > 1 && this.currentRepeatIndex < this.repeatCount - 1) {
+              const prevCue = this.subtitles[this.lastCueIndex];
+              if (prevCue && currentVideo) {
+                this.currentRepeatIndex++;
+                console.log(`[Kalaama] Repeating caption (${this.currentRepeatIndex + 1}/${this.repeatCount})`);
+                // Seek back to previous cue
+                currentVideo.currentTime = prevCue.startTime + 0.05;
+                return; // Don't emit the cue change yet
+              }
+            }
+            // Done repeating or no repeat needed - move to new cue
+            this.lastCueIndex = cueIndex;
+            this.currentRepeatIndex = 0;
+          } else if (this.lastCueIndex < 0 && cueIndex >= 0) {
+            // First cue detected
+            this.lastCueIndex = cueIndex;
+            this.currentRepeatIndex = 0;
+          }
+
           // Find matching translated cue using multiple strategies
           let translatedText: string | null = null;
           if (cue && this.translatedSubtitles.length > 0) {
@@ -621,6 +667,41 @@ class KalaamaContentScript {
         });
         return true; // Keep channel open for async response
 
+      // Video control: playback speed
+      case 'SET_PLAYBACK_SPEED':
+        this.handleSetPlaybackSpeed(message.payload as { speed: number });
+        sendResponse({ success: true });
+        break;
+
+      // Video control: loop segment
+      case 'SET_LOOP_SEGMENT':
+        this.handleSetLoopSegment(message.payload as { startTime: number; endTime: number });
+        sendResponse({ success: true });
+        break;
+
+      case 'CLEAR_LOOP_SEGMENT':
+        this.handleClearLoopSegment();
+        sendResponse({ success: true });
+        break;
+
+      // Video control: repeat count
+      case 'SET_REPEAT_COUNT':
+        this.handleSetRepeatCount(message.payload as { count: number });
+        sendResponse({ success: true });
+        break;
+
+      // Video control: change subtitle track
+      case 'CHANGE_SUBTITLE_TRACK':
+        this.handleChangeSubtitleTrack(message.payload as { languageCode: string });
+        sendResponse({ success: true });
+        break;
+
+      // Update auto-pause setting
+      case 'SET_AUTO_PAUSE':
+        this.handleSetAutoPause(message.payload as { enabled: boolean });
+        sendResponse({ success: true });
+        break;
+
       default:
         sendResponse({ error: 'Unknown message type' });
     }
@@ -677,6 +758,101 @@ class KalaamaContentScript {
         console.error('[Kalaama] Voice error:', err.message);
         sendResponse({ success: false, error: err.message });
       });
+  }
+
+  /**
+   * Set video playback speed
+   */
+  private handleSetPlaybackSpeed(payload: { speed: number }): void {
+    const video = document.querySelector('video.html5-main-video') as HTMLVideoElement;
+    if (video) {
+      video.playbackRate = payload.speed;
+      console.log('[Kalaama] Playback speed set to:', payload.speed);
+    }
+  }
+
+  /**
+   * Set a loop segment between start and end times
+   */
+  private handleSetLoopSegment(payload: { startTime: number; endTime: number }): void {
+    const video = document.querySelector('video.html5-main-video') as HTMLVideoElement;
+    if (!video) return;
+
+    this.loopStart = payload.startTime;
+    this.loopEnd = payload.endTime;
+
+    // Clear any existing loop
+    if (this.loopInterval) {
+      clearInterval(this.loopInterval);
+    }
+
+    // Check every 100ms if we've passed the loop end
+    this.loopInterval = window.setInterval(() => {
+      if (video.currentTime >= this.loopEnd) {
+        video.currentTime = this.loopStart;
+      }
+    }, 100);
+
+    console.log('[Kalaama] Loop set:', this.loopStart, '->', this.loopEnd);
+  }
+
+  /**
+   * Clear the current loop segment
+   */
+  private handleClearLoopSegment(): void {
+    if (this.loopInterval) {
+      clearInterval(this.loopInterval);
+      this.loopInterval = null;
+    }
+    this.loopStart = 0;
+    this.loopEnd = 0;
+    console.log('[Kalaama] Loop cleared');
+  }
+
+  /**
+   * Set the number of times to repeat each caption
+   */
+  private handleSetRepeatCount(payload: { count: number }): void {
+    this.repeatCount = payload.count;
+    this.currentRepeatIndex = 0;
+    console.log('[Kalaama] Repeat count set to:', this.repeatCount);
+  }
+
+  /**
+   * Set auto-pause enabled state
+   */
+  private handleSetAutoPause(payload: { enabled: boolean }): void {
+    this.autoPauseEnabled = payload.enabled;
+    console.log('[Kalaama] Auto-pause set to:', this.autoPauseEnabled);
+    // Reset repeat state when auto-pause is toggled
+    if (this.autoPauseEnabled) {
+      this.currentRepeatIndex = 0;
+    }
+  }
+
+  /**
+   * Change the subtitle track language
+   */
+  private async handleChangeSubtitleTrack(payload: { languageCode: string }): Promise<void> {
+    const track = this.availableTracks.find(t => t.languageCode === payload.languageCode);
+    if (!track) {
+      console.warn('[Kalaama] Track not found for language:', payload.languageCode);
+      return;
+    }
+
+    console.log('[Kalaama] Changing subtitle track to:', track.languageName);
+    await this.loadCaptions(track);
+
+    // Notify side panel of track change
+    this.sendToSidePanel({
+      type: 'CAPTION_STATUS',
+      payload: {
+        connected: true,
+        hasCaptions: true,
+        language: track.languageCode,
+        availableLanguages: this.availableTracks.map(t => t.languageCode)
+      }
+    });
   }
 
   private getVideoId(): string | null {

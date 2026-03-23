@@ -26,6 +26,10 @@ export type MessageType =
   // Video control messages
   | 'SET_PLAYBACK_SPEED'
   | 'SET_LOOP_SEGMENT'
+  | 'CLEAR_LOOP_SEGMENT'
+  | 'SET_REPEAT_COUNT'
+  | 'SET_AUTO_PAUSE'
+  | 'CHANGE_SUBTITLE_TRACK'
   | 'GET_VIDEO_STATE'
   // Learning feature messages
   | 'GET_AI_TUTOR_RESPONSE'
@@ -266,10 +270,10 @@ export class MessagingService {
   /**
    * Set loop segment for current cue (shadowing practice)
    */
-  async setLoopSegment(start: number, end: number): Promise<void> {
+  async setLoopSegment(startTime: number, endTime: number): Promise<void> {
     return this.sendToBackground({
       type: 'SET_LOOP_SEGMENT' as MessageType,
-      payload: { start, end },
+      payload: { startTime, endTime },
     });
   }
 
@@ -278,8 +282,38 @@ export class MessagingService {
    */
   async clearLoopSegment(): Promise<void> {
     return this.sendToBackground({
-      type: 'SET_LOOP_SEGMENT' as MessageType,
-      payload: null,
+      type: 'CLEAR_LOOP_SEGMENT' as MessageType,
+      payload: {},
+    });
+  }
+
+  /**
+   * Set repeat count for captions
+   */
+  async setRepeatCount(count: number): Promise<void> {
+    return this.sendToBackground({
+      type: 'SET_REPEAT_COUNT' as MessageType,
+      payload: { count },
+    });
+  }
+
+  /**
+   * Set auto-pause enabled state
+   */
+  async setAutoPause(enabled: boolean): Promise<void> {
+    return this.sendToBackground({
+      type: 'SET_AUTO_PAUSE' as MessageType,
+      payload: { enabled },
+    });
+  }
+
+  /**
+   * Change subtitle track language
+   */
+  async changeSubtitleTrack(languageCode: string): Promise<void> {
+    return this.sendToBackground({
+      type: 'CHANGE_SUBTITLE_TRACK' as MessageType,
+      payload: { languageCode },
     });
   }
 

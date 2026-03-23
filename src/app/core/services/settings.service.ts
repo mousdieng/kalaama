@@ -19,6 +19,7 @@ export interface UserSettings {
   show_pronunciation: boolean;
   theme: 'light' | 'dark' | 'auto';
   ai_examples_count: number; // Number of AI examples to generate (10-20)
+  repeat_count: number; // Number of times to repeat each caption (1-10)
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   show_pronunciation: true,
   theme: 'auto',
   ai_examples_count: 15, // Default to 15 examples
+  repeat_count: 1, // Default to 1 (no repeat)
 };
 
 @Injectable({

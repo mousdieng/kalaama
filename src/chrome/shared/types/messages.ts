@@ -45,7 +45,13 @@ export type MessageType =
   | 'GET_GRAMMAR_ANALYSIS'
   | 'ENABLE_GRAMMAR_HIGHLIGHTING'
   | 'DISABLE_GRAMMAR_HIGHLIGHTING'
-  | 'GET_WORD_EXAMPLES';
+  | 'GET_WORD_EXAMPLES'
+  // Video control messages
+  | 'SET_PLAYBACK_SPEED'
+  | 'SET_LOOP_SEGMENT'
+  | 'CLEAR_LOOP_SEGMENT'
+  | 'SET_REPEAT_COUNT'
+  | 'CHANGE_SUBTITLE_TRACK';
 
 export interface Message<T = unknown> {
   type: MessageType;
@@ -501,4 +507,37 @@ export interface GetWordExamplesPayload {
  */
 export interface WordExamplesResponse {
   examples: string[];
+}
+
+// ============================================
+// Video Control Types
+// ============================================
+
+/**
+ * Set playback speed payload
+ */
+export interface SetPlaybackSpeedPayload {
+  speed: number;
+}
+
+/**
+ * Set loop segment payload
+ */
+export interface SetLoopSegmentPayload {
+  startTime: number;
+  endTime: number;
+}
+
+/**
+ * Set repeat count payload
+ */
+export interface SetRepeatCountPayload {
+  count: number;
+}
+
+/**
+ * Change subtitle track payload
+ */
+export interface ChangeSubtitleTrackPayload {
+  languageCode: string;
 }

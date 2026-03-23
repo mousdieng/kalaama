@@ -118,6 +118,10 @@ async function handleMessage(
     case 'SEEK_TO_CUE':
     case 'SET_PLAYBACK_SPEED':
     case 'SET_LOOP_SEGMENT':
+    case 'CLEAR_LOOP_SEGMENT':
+    case 'SET_REPEAT_COUNT':
+    case 'SET_AUTO_PAUSE':
+    case 'CHANGE_SUBTITLE_TRACK':
     case 'GET_VIDEO_STATE':
       return forwardToContentScript(message);
 
@@ -524,13 +528,22 @@ async function sendToSidePanel(message: unknown): Promise<void> {
  */
 async function forwardToContentScript(message: Message): Promise<unknown> {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
-      throw new Error('No active tab found');
+    // First try to find a YouTube tab
+    const youtubeTabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
+    let targetTab = youtubeTabs.find(t => t.active) || youtubeTabs[0];
+
+    // If no YouTube tab, fall back to active tab
+    if (!targetTab) {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      targetTab = activeTab;
+    }
+
+    if (!targetTab?.id) {
+      throw new Error('No target tab found');
     }
 
     return new Promise((resolve, reject) => {
-      chrome.tabs.sendMessage(tab.id!, message, (response) => {
+      chrome.tabs.sendMessage(targetTab!.id!, message, (response) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
         } else {
