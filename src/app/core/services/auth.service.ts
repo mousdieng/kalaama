@@ -42,7 +42,6 @@ export class AuthService {
    */
   async checkSession(): Promise<void> {
     // LOCAL MODE: Auto-login with local user
-    console.log('[Kalaama] Local mode - auto login');
     this.userSubject.next(LOCAL_USER);
 
     // =============================================================================
@@ -70,7 +69,6 @@ export class AuthService {
    */
   async signInWithGoogle(): Promise<void> {
     // LOCAL MODE: Just set local user
-    console.log('[Kalaama] Local mode - Google auth disabled');
     this.userSubject.next(LOCAL_USER);
 
     // =============================================================================
@@ -96,7 +94,6 @@ export class AuthService {
    */
   async signInWithEmail(email: string, password: string): Promise<void> {
     // LOCAL MODE: Just set local user
-    console.log('[Kalaama] Local mode - email auth disabled');
     this.userSubject.next({
       ...LOCAL_USER,
       email: email,
@@ -117,7 +114,6 @@ export class AuthService {
    */
   async signOut(): Promise<void> {
     // LOCAL MODE: Clear local user
-    console.log('[Kalaama] Local mode - sign out');
     this.userSubject.next(null);
 
     // Clear any stored data if needed

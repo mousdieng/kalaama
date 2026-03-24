@@ -158,7 +158,6 @@ export class LearnService {
       // Update cache
       this.progressCache = languageProgress;
 
-      console.log('[LearnService] Progress saved:', lessonProgress);
     } catch (error) {
       console.error('[LearnService] Failed to save lesson progress:', error);
       throw error;
@@ -281,8 +280,6 @@ export class LearnService {
 
       await chrome.storage.local.set({ learning_progress: allProgress });
       this.progressCache = null;
-
-      console.log('[LearnService] Progress reset for', language);
     } catch (error) {
       console.error('[LearnService] Failed to reset progress:', error);
     }
@@ -380,8 +377,6 @@ export class LearnService {
 
       // Update cache
       this.progressCache = languageProgress;
-
-      console.log('[LearnService] Conversation progress saved:', unitProgress);
     } catch (error) {
       console.error('[LearnService] Failed to save conversation progress:', error);
       throw error;

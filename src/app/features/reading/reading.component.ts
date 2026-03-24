@@ -86,8 +86,7 @@ export class ReadingComponent implements OnInit, OnDestroy {
 
     // Subscribe to settings changes
     this.settingsSubscription = this.settingsService.settings$.subscribe((settings) => {
-      console.log('[Reading] Settings updated:', settings);
-      this.settings = { ...this.settings, ...settings };
+        this.settings = { ...this.settings, ...settings };
     });
 
     // Listen for messages forwarded by service worker (not directly from content scripts)
@@ -121,7 +120,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
       if (loadedSettings) {
         this.settings = { ...this.settings, ...loadedSettings };
         this.grammarHighlighting = (loadedSettings as any).grammar_highlighting || false;
-        console.log('[Reading] Settings loaded:', this.settings);
       }
     } catch (error) {
       console.warn('[Reading] Failed to load settings:', error);
@@ -165,7 +163,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
           }
         } catch (error) {
           // Content script not loaded yet - that's OK, user can click Enable
-          console.log('[Reading] Content script not loaded yet');
           this.statusText = 'Click Enable to start reading';
         }
       }
@@ -200,13 +197,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
   }
 
   private async handleWordClick(payload: { word: string; sentence: string; pageUrl: string; pageTitle: string }) {
-    console.log('='.repeat(50));
-    console.log('[TRACE 3/5] Reading Component - Received word click');
-    console.log('  Word:', payload.word);
-    console.log('  Sentence:', payload.sentence);
-    console.log('  Target Language:', this.settings?.target_language);
-    console.log('  Native Language:', this.settings?.native_language);
-
     if (!this.settingsLoaded && this.settingsPromise) {
       await this.settingsPromise;
     }
@@ -221,8 +211,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
     this.isLoadingContext = true;
     this.isLoadingAIExamples = true;
 
-    console.log('[TRACE 3/5] Calling messagingService.getWordContext()...');
-
     // Try to get AI context first
     try {
       const context = await this.messagingService.getWordContext(
@@ -231,30 +219,24 @@ export class ReadingComponent implements OnInit, OnDestroy {
         this.settings.target_language,
         this.settings.native_language
       );
-      console.log('[TRACE 3/5] Received word context:', context);
       this.wordContext = context;
       this.translation = context.translation;
       this.isLoadingContext = false;
     } catch (error: any) {
-      console.warn('[TRACE 3/5] AI context failed, using basic translation:', error);
       this.isLoadingContext = false;
       // Fall back to basic translation
       try {
-        console.log('[TRACE 3/5] Falling back to basic translateWord()...');
         const result = await this.messagingService.translateWord(
           payload.word,
           this.settings.target_language,
           this.settings.native_language
         );
-        console.log('[TRACE 3/5] Basic translation result:', result);
         this.translation = result.translation;
       } catch (translateError: any) {
-        console.error('[TRACE 3/5] Basic translation also failed:', translateError);
         this.translationError = translateError.message || 'Translation failed';
       }
     } finally {
       this.isTranslating = false;
-      console.log('[TRACE 3/5] Final state - Translation:', this.translation, 'Error:', this.translationError);
     }
 
     // Fetch AI examples (10-20 examples) in parallel
@@ -288,7 +270,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
           }
         } catch (msgError: any) {
           // Content script might not be loaded, try injecting it
-          console.log('[Reading] Content script not responding, trying to inject...');
           try {
             await chrome.scripting.executeScript({
               target: { tabId: tab.id },
@@ -359,7 +340,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
       // If we have AI examples loaded, save them too
       if (savedWord && this.aiExamples.length > 0) {
         await this.vocabularyService.updateAIExamples(savedWord.id, this.aiExamples);
-        console.log('[Reading] Saved word with AI examples:', this.aiExamples.length);
       }
 
       this.showSavedToast = true;
@@ -390,7 +370,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
       );
 
       if (existingWord?.aiExamples && existingWord.aiExamples.length > 0) {
-        console.log(`[Reading] Using stored AI examples for "${word}":`, existingWord.aiExamples.length);
         this.aiExamples = existingWord.aiExamples;
         this.isLoadingAIExamples = false;
         return;
@@ -398,7 +377,6 @@ export class ReadingComponent implements OnInit, OnDestroy {
 
       // No stored examples, fetch new ones
       const examplesCount = this.settings.ai_examples_count || 15;
-      console.log(`[Reading] Fetching ${examplesCount} new AI examples for "${word}"...`);
 
       const response = await this.messagingService.getWordExamples(
         word,
@@ -407,13 +385,11 @@ export class ReadingComponent implements OnInit, OnDestroy {
         examplesCount
       );
 
-      console.log('[Reading] AI examples received:', response.examples.length);
       this.aiExamples = response.examples;
 
       // If word exists in vocabulary, update it with the new examples
       if (existingWord) {
         await this.vocabularyService.updateAIExamples(existingWord.id, response.examples);
-        console.log('[Reading] Updated existing vocabulary word with AI examples');
       }
     } catch (error: any) {
       console.error('[Reading] Failed to fetch AI examples:', error);

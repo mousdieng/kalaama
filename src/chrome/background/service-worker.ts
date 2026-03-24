@@ -1,3 +1,5 @@
+console.log('[Kalaama SW] Service worker script starting...');
+
 /**
  * Kalaama Background Service Worker
  * Handles message routing and local storage
@@ -14,6 +16,12 @@
 // const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 // const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // =============================================================================
+
+// Environment variables (injected at build time)
+declare const ENV_GEMINI_API_KEY: string;
+declare const ENV_OPENAI_API_KEY: string;
+declare const ENV_CLAUDE_API_KEY: string;
+declare const ENV_ELEVENLABS_API_KEY: string;
 
 import type {
   Message,
@@ -46,13 +54,804 @@ const LOCAL_USER = {
   email: 'local@kalaama.app',
 };
 
+/**
+ * Get API key from storage with fallback to environment variable
+ * Priority: 1) User setting in chrome.storage, 2) Environment variable (injected at build time)
+ */
+async function getApiKey(keyName: 'gemini_api_key' | 'openai_api_key' | 'claude_api_key' | 'elevenlabs_api_key'): Promise<string | null> {
+  // Try to get from chrome.storage first (user-configured)
+  const storage = await chrome.storage.local.get(keyName);
+  if (storage[keyName]) {
+    return storage[keyName];
+  }
+
+  // Fallback to environment variable (injected at build time)
+  const envKey = {
+    'gemini_api_key': ENV_GEMINI_API_KEY,
+    'openai_api_key': ENV_OPENAI_API_KEY,
+    'claude_api_key': ENV_CLAUDE_API_KEY,
+    'elevenlabs_api_key': ENV_ELEVENLABS_API_KEY,
+  }[keyName];
+
+  // Filter out placeholder values
+  if (envKey && envKey.startsWith('__') && envKey.endsWith('__')) {
+    return null;
+  }
+
+  return envKey || null;
+}
+
+// =============================================================================
+// CACHE INFRASTRUCTURE - 3-tier caching system for API responses
+// =============================================================================
+
+// Cache key generators
+function generateCacheKey(word: string, targetLang: string, nativeLang: string): string {
+  return `wordcontext::${word.toLowerCase()}::${targetLang}::${nativeLang}`;
+}
+
+function generateExamplesCacheKey(word: string, targetLang: string, nativeLang: string, count: number): string {
+  return `wordexamples::${word.toLowerCase()}::${targetLang}::${nativeLang}::${count}`;
+}
+
+// In-memory cache with LRU eviction
+interface CacheEntry<T> {
+  value: T;
+  timestamp: number;
+}
+
+class LRUCache<T> {
+  private cache: Map<string, CacheEntry<T>> = new Map();
+  private readonly maxSize: number = 1000;
+
+  get(key: string): T | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    // Move to end (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    return entry.value;
+  }
+
+  set(key: string, value: T): void {
+    // Remove if exists
+    this.cache.delete(key);
+
+    // Add to end
+    this.cache.set(key, { value, timestamp: Date.now() });
+
+    // Evict oldest if exceeds max size
+    if (this.cache.size > this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+  }
+
+  has(key: string): boolean {
+    return this.cache.has(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  size(): number {
+    return this.cache.size;
+  }
+}
+
+// Initialize caches
+const wordContextCache = new LRUCache<WordContextResponse>();
+const wordExamplesCache = new LRUCache<WordExamplesResponse>();
+
+/**
+ * Get cached word context from 3-tier cache:
+ * 1. In-memory cache (instant)
+ * 2. chrome.storage.local (persistent)
+ * 3. Returns null if not found
+ */
+async function getCachedWordContext(cacheKey: string): Promise<WordContextResponse | null> {
+  // Tier 1: In-memory cache
+  const memoryEntry = wordContextCache.get(cacheKey);
+  if (memoryEntry) {
+    return memoryEntry;
+  }
+
+  // Tier 2: Chrome storage
+  try {
+    const storage = await chrome.storage.local.get(cacheKey);
+    if (storage[cacheKey]) {
+      // Move to memory cache for next access
+      wordContextCache.set(cacheKey, storage[cacheKey]);
+      return storage[cacheKey];
+    }
+  } catch (error) {
+    console.warn(`[Kalaama] Cache storage read error: ${error}`);
+  }
+
+  return null;
+}
+
+/**
+ * Store word context in both caches (memory + storage)
+ */
+async function setCachedWordContext(cacheKey: string, context: WordContextResponse): Promise<void> {
+  // Store in memory cache
+  wordContextCache.set(cacheKey, context);
+
+  // Store in chrome.storage for persistence
+  try {
+    await chrome.storage.local.set({ [cacheKey]: context });
+  } catch (error) {
+    console.warn(`[Kalaama] Cache storage write error: ${error}`);
+  }
+}
+
+/**
+ * Get cached word examples from 3-tier cache
+ */
+async function getCachedWordExamples(cacheKey: string): Promise<WordExamplesResponse | null> {
+  // Tier 1: In-memory cache
+  const memoryEntry = wordExamplesCache.get(cacheKey);
+  if (memoryEntry) {
+    return memoryEntry;
+  }
+
+  // Tier 2: Chrome storage
+  try {
+    const storage = await chrome.storage.local.get(cacheKey);
+    if (storage[cacheKey]) {
+      wordExamplesCache.set(cacheKey, storage[cacheKey]);
+      return storage[cacheKey];
+    }
+  } catch (error) {
+    console.warn(`[Kalaama] Cache storage read error: ${error}`);
+  }
+
+  return null;
+}
+
+/**
+ * Store word examples in both caches
+ */
+async function setCachedWordExamples(cacheKey: string, examples: WordExamplesResponse): Promise<void> {
+  wordExamplesCache.set(cacheKey, examples);
+
+  try {
+    await chrome.storage.local.set({ [cacheKey]: examples });
+  } catch (error) {
+    console.warn(`[Kalaama] Cache storage write error: ${error}`);
+  }
+}
+
+/**
+ * Check vocabulary table for already saved word context
+ * Returns cached AI context if word was previously processed
+ */
+async function getWordFromVocabulary(word: string, language: string): Promise<WordContextResponse | null> {
+  try {
+    const storage = await chrome.storage.local.get('vocabulary');
+    const vocabulary = storage.vocabulary || [];
+
+    for (const entry of vocabulary) {
+      if (entry.word && entry.word.toLowerCase() === word.toLowerCase() &&
+          entry.language === language) {
+        // Construct response from saved vocabulary entry
+        const response: WordContextResponse = {
+          definition: entry.definition || '',
+          partOfSpeech: entry.part_of_speech || '',
+          examples: entry.examples || [],
+          pronunciation: entry.pronunciation || '',
+          translation: entry.translation || word
+        };
+        return response;
+      }
+    }
+  } catch (error) {
+    console.warn(`[Kalaama] Vocabulary lookup error: ${error}`);
+  }
+
+  return null;
+}
+
+// =============================================================================
+// REQUEST DEDUPLICATION - Prevent duplicate API calls for same word
+// =============================================================================
+
+// Track in-flight requests to deduplicate concurrent requests for same word
+const inFlightRequests: Map<string, Promise<any>> = new Map();
+
+/**
+ * Execute request with deduplication
+ * If same request is already in progress, return existing promise
+ * Otherwise, execute and store promise
+ */
+function executeWithDeduplication<T>(
+  cacheKey: string,
+  executor: () => Promise<T>
+): Promise<T> {
+  // Check if request already in flight
+  const existingPromise = inFlightRequests.get(cacheKey);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
+  // Create new promise and track it
+  const promise = executor()
+    .then((result) => {
+      // Remove from in-flight on success
+      inFlightRequests.delete(cacheKey);
+      return result;
+    })
+    .catch((error) => {
+      // Remove from in-flight on error (allow retries)
+      inFlightRequests.delete(cacheKey);
+      throw error;
+    });
+
+  inFlightRequests.set(cacheKey, promise);
+  return promise;
+}
+
+// =============================================================================
+// RATE LIMITER - Token bucket algorithm for 15 requests/minute
+// Gemini free tier: 15 RPM (requests per minute)
+// =============================================================================
+
+class TokenBucketRateLimiter {
+  private tokens: number;
+  private readonly maxTokens: number = 15; // 15 requests per minute (Gemini free tier)
+  private readonly refillRate: number = 0.25; // 1 token per 4 seconds (15 per minute)
+  private lastRefillTime: number = Date.now();
+
+  constructor() {
+    this.tokens = this.maxTokens;
+  }
+
+  /**
+   * Refill tokens based on time elapsed
+   */
+  private refill(): void {
+    const now = Date.now();
+    const elapsedSeconds = (now - this.lastRefillTime) / 1000;
+    const tokensToAdd = Math.min(elapsedSeconds * this.refillRate, this.maxTokens);
+
+    this.tokens = Math.min(this.maxTokens, this.tokens + tokensToAdd);
+    this.lastRefillTime = now;
+  }
+
+  /**
+   * Try to consume a token
+   * Returns true if token available, false if rate limited
+   */
+  tryConsume(): boolean {
+    this.refill();
+
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get time in seconds until next token available
+   */
+  getTimeUntilNextToken(): number {
+    this.refill();
+    return Math.ceil((1 - this.tokens) / this.refillRate);
+  }
+
+  /**
+   * Get current token count
+   */
+  getTokens(): number {
+    this.refill();
+    return this.tokens;
+  }
+
+  /**
+   * Reset limiter (useful for testing)
+   */
+  reset(): void {
+    this.tokens = this.maxTokens;
+    this.lastRefillTime = Date.now();
+  }
+}
+
+// Global rate limiter instance
+const rateLimiter = new TokenBucketRateLimiter();
+
+// =============================================================================
+// REQUEST QUEUE - Priority queue respecting rate limit
+// =============================================================================
+
+interface QueuedRequest<T> {
+  execute: () => Promise<T>;
+  priority: number; // 1 = user-facing (word clicks), 0 = background (examples)
+  resolve: (value: T) => void;
+  reject: (error: any) => void;
+  enqueuedAt: number;
+}
+
+class RequestQueue {
+  private queue: QueuedRequest<any>[] = [];
+  private processing: boolean = false;
+
+  /**
+   * Enqueue a request with priority
+   * Priority 1: user-facing (word context clicks)
+   * Priority 0: background (word examples, grammar analysis)
+   */
+  enqueue<T>(execute: () => Promise<T>, priority: number = 1): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queue.push({
+        execute,
+        priority,
+        resolve,
+        reject,
+        enqueuedAt: Date.now()
+      });
+
+      // Sort by priority (higher priority first) and enqueue time (FIFO within priority)
+      this.queue.sort((a, b) => {
+        if (a.priority !== b.priority) {
+          return b.priority - a.priority; // Higher priority first
+        }
+        return a.enqueuedAt - b.enqueuedAt; // Earlier enqueue time first (FIFO)
+      });
+
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Process queue respecting rate limit
+   */
+  private async processQueue(): Promise<void> {
+    if (this.processing || this.queue.length === 0) return;
+
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      const request = this.queue[0];
+
+      // Try to get a token
+      if (rateLimiter.tryConsume()) {
+        // Token available, process immediately
+        this.queue.shift();
+
+        try {
+          const result = await request.execute();
+          request.resolve(result);
+        } catch (error) {
+          request.reject(error);
+        }
+      } else {
+        // No token available, wait before trying again
+        const waitTime = rateLimiter.getTimeUntilNextToken();
+        await new Promise(resolve => setTimeout(resolve, waitTime * 1000 + 100)); // Add 100ms buffer
+      }
+    }
+
+    this.processing = false;
+  }
+
+  /**
+   * Get current queue size
+   */
+  size(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Clear queue (use with caution)
+   */
+  clear(): void {
+    this.queue.forEach(req => req.reject(new Error('Queue cleared')));
+    this.queue = [];
+  }
+}
+
+// Global request queue
+const requestQueue = new RequestQueue();
+
+// =============================================================================
+// RETRY LOGIC - Exponential backoff for 429 errors
+// =============================================================================
+
+interface RetryOptions {
+  maxRetries?: number;
+  initialDelayMs?: number;
+}
+
+/**
+ * Execute fetch with exponential backoff retry on 429 errors
+ * Backoff schedule: 1s → 2s → 4s → 8s (default max 3 retries = 4 total attempts)
+ */
+async function executeWithRetry(
+  fetchFn: () => Promise<Response>,
+  options: RetryOptions = {}
+): Promise<Response> {
+  const maxRetries = options.maxRetries ?? 3;
+  const initialDelayMs = options.initialDelayMs ?? 1000;
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetchFn();
+
+      // Check for 429 rate limit error
+      if (response.status === 429) {
+        // Parse Retry-After header if available
+        const retryAfter = response.headers.get('Retry-After');
+        let delayMs = initialDelayMs * Math.pow(2, attempt);
+
+        if (retryAfter) {
+          // Retry-After can be in seconds or HTTP-date format
+          const retrySeconds = parseInt(retryAfter, 10);
+          if (!isNaN(retrySeconds)) {
+            delayMs = retrySeconds * 1000;
+          }
+        }
+
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          continue;
+        } else {
+          return response; // Return 429 response to caller for fallback handling
+        }
+      }
+
+      // Success or non-429 error
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, initialDelayMs * Math.pow(2, attempt)));
+      }
+    }
+  }
+
+  // All retries exhausted
+  throw lastError || new Error('All retries exhausted');
+}
+
+// =============================================================================
+// FREE API INTEGRATION (Wiktionary, Tatoeba, Linguee) - FALLBACK SYSTEM
+// =============================================================================
+
+// ISO 639-1 to ISO 639-3 language code mapping (for Tatoeba API)
+const ISO_639_1_TO_639_3: Record<string, string> = {
+  'en': 'eng',  // English
+  'es': 'spa',  // Spanish
+  'fr': 'fra',  // French
+  'de': 'deu',  // German
+  'it': 'ita',  // Italian
+  'pt': 'por',  // Portuguese
+  'ru': 'rus',  // Russian
+  'zh': 'cmn',  // Chinese (Mandarin)
+  'ja': 'jpn',  // Japanese
+  'ko': 'kor',  // Korean
+  'ar': 'ara',  // Arabic
+  'wo': 'wol',  // Wolof
+};
+
+/**
+ * Convert ISO 639-1 language code to ISO 639-3 for Tatoeba API
+ */
+function convertToISO6393(iso6391: string): string {
+  return ISO_639_1_TO_639_3[iso6391] || iso6391;
+}
+
+/**
+ * Wiktionary API result
+ */
+interface WiktionaryResult {
+  translation: string | null;
+  definition: string | null;
+  partOfSpeech: string | null;
+  pronunciation: string | null;
+}
+
+/**
+ * Fetch word definition from Wiktionary
+ * Uses parsing API to get translations and definitions
+ */
+async function fetchFromWiktionary(word: string, targetLang: string, nativeLang: string): Promise<WiktionaryResult> {
+  try {
+    // Use native language Wiktionary to get translation definition
+    // This is more reliable for translations
+    const parseUrl = `https://${nativeLang}.wiktionary.org/w/api.php?action=parse&page=${encodeURIComponent(word)}&format=json`;
+
+    const response = await fetch(parseUrl);
+
+    if (!response.ok) {
+      return { translation: null, definition: null, partOfSpeech: null, pronunciation: null };
+    }
+
+    const data = await response.json() as Record<string, any>;
+    const html = data.parse?.text?.['*'] || '';
+
+    // If empty, word not found
+    if (!html || html.length === 0) {
+      return { translation: null, definition: null, partOfSpeech: null, pronunciation: null };
+    }
+
+    let translation: string | null = null;
+    let definition: string | null = null;
+    let partOfSpeech: string | null = null;
+    let pronunciation: string | null = null;
+
+    // Extract definition - look for the first list item with content
+    const listMatch = html.match(/<li[^>]*>(.*?)<\/li>/i);
+    if (listMatch) {
+      const text = listMatch[1].replace(/<[^>]*>/g, '').trim();
+      if (text && text.length > 0) {
+        definition = text.substring(0, 200);
+      }
+    }
+
+    // Extract part of speech - usually appears in parentheses or as a bold heading
+    const posMatch = html.match(/<dt[^>]*>(.*?)<\/dt>/i);
+    if (posMatch) {
+      const text = posMatch[1].replace(/<[^>]*>/g, '').trim();
+      if (text && text.length > 0) {
+        partOfSpeech = text.substring(0, 50);
+      }
+    }
+
+    // For translation: use simple logic
+    // The first definition line usually contains the translation
+    if (definition && !translation) {
+      translation = definition;
+    }
+
+    // Extract pronunciation if available (usually in parentheses)
+    const pronMatch = html.match(/\(([^)]*(?:pronunciation|pronunciation guide)[^)]*)\)/i);
+    if (pronMatch) {
+      pronunciation = pronMatch[1].trim();
+    }
+
+    return {
+      translation: translation || null,
+      definition: definition || null,
+      partOfSpeech: partOfSpeech || null,
+      pronunciation: pronunciation || null
+    };
+  } catch (error) {
+    console.warn('[Kalaama] Wiktionary fetch failed:', error);
+    return { translation: null, definition: null, partOfSpeech: null, pronunciation: null };
+  }
+}
+
+/**
+ * Fetch example sentences from Tatoeba
+ */
+async function fetchFromTatoeba(word: string, targetLang: string, nativeLang: string, count: number = 15): Promise<string[]> {
+  try {
+    // Convert language codes to ISO 639-3 for Tatoeba API
+    const fromLang = convertToISO6393(targetLang);
+    const toLang = convertToISO6393(nativeLang);
+
+    // Build API URL
+    const params = new URLSearchParams({
+      query: word,
+      from: fromLang,
+      to: toLang,
+      trans_filter: 'limit', // Only get sentences with translations
+      sort: 'relevance'
+    });
+
+    const apiUrl = `https://tatoeba.org/en/api_v0/search?${params.toString()}`;
+
+    const response = await fetch(apiUrl);
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json() as Record<string, any>;
+    const results = data.results || [];
+
+    // Format examples as "Source (Translation)"
+    const examples = results.slice(0, count).map((result: Record<string, any>) => {
+      const source = result.text || '';
+      const translations = result.translations || [];
+
+      if (translations.length > 0 && translations[0].length > 0) {
+        const translation = translations[0][0].text || '';
+        return `${source} (${translation})`;
+      }
+
+      return source;
+    }).filter((ex: string) => ex.length > 0);
+
+    return examples;
+  } catch (error) {
+    console.warn('[Kalaama] Tatoeba fetch failed:', error);
+    return [];
+  }
+}
+
+/**
+ * Linguee API result
+ */
+interface LingueeResult {
+  translation: string | null;
+  definition: string | null;
+  examples: string[];
+}
+
+/**
+ * Fetch translations and examples from Linguee (HTML scraping)
+ */
+async function fetchFromLinguee(word: string, targetLang: string, nativeLang: string): Promise<LingueeResult> {
+  try {
+    // Map language codes to Linguee format (e.g., de-en for German-English)
+    const langMap: Record<string, string> = {
+      'en': 'en',
+      'es': 'es',
+      'fr': 'fr',
+      'de': 'de',
+      'it': 'it',
+      'pt': 'pt',
+      'ru': 'ru',
+      'zh': 'zh',
+      'ja': 'ja',
+      'ko': 'ko',
+      'ar': 'ar',
+      'wo': 'wo'
+    };
+
+    const targetCode = langMap[targetLang] || targetLang;
+    const nativeCode = langMap[nativeLang] || nativeLang;
+    const langPair = `${targetCode}-${nativeCode}`;
+
+    // Build Linguee URL
+    const url = `https://www.linguee.com/${langPair}/search?source_lang=${targetCode}&target_lang=${nativeCode}&query=${encodeURIComponent(word)}`;
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    if (!response.ok) {
+      return { translation: null, definition: null, examples: [] };
+    }
+
+    const html = await response.text();
+
+    // Parse HTML to extract translations and examples
+    let translation: string | null = null;
+    let definition: string | null = null;
+    const examples: string[] = [];
+
+    // Extract main translation from the first translation entry
+    // Look for pattern: <span class="translation">...</span>
+    const translationMatch = html.match(/<a[^>]*class="[^"]*translation[^"]*"[^>]*>([^<]+)<\/a>/);
+    if (translationMatch) {
+      translation = translationMatch[1].trim();
+    }
+
+    // If main translation not found, try alternative patterns
+    if (!translation) {
+      const altMatch = html.match(/<div[^>]*class="[^"]*dictLink[^"]*"[^>]*>([^<]+)<\/div>/);
+      if (altMatch) {
+        translation = altMatch[1].trim();
+      }
+    }
+
+    // Extract examples - look for example sentences with translations
+    const examplePattern = /<div[^>]*class="[^"]*example[^"]*"[^>]*>([^<]+)<\/div>/g;
+    let match;
+    while ((match = examplePattern.exec(html)) !== null && examples.length < 10) {
+      const example = match[1].trim();
+      if (example.length > 0 && example.length < 200) {
+        examples.push(example);
+      }
+    }
+
+    // Alternative example pattern
+    if (examples.length < 5) {
+      const exampleSentencePattern = /<span[^>]*class="[^"]*sentence[^"]*"[^>]*>([^<]+)<\/span>/g;
+      while ((match = exampleSentencePattern.exec(html)) !== null && examples.length < 10) {
+        const example = match[1].trim();
+        if (example.length > 0 && example.length < 200 && !examples.includes(example)) {
+          examples.push(example);
+        }
+      }
+    }
+
+    return {
+      translation: translation || null,
+      definition: definition || null,
+      examples: examples.slice(0, 5) // Limit to 5 examples
+    };
+  } catch (error) {
+    console.warn('[Kalaama] Linguee fetch failed, continuing with other sources:', error instanceof Error ? error.message : 'Unknown error');
+    return { translation: null, definition: null, examples: [] };
+  }
+}
+
+/**
+ * Fetch word context from all free APIs in parallel (Wiktionary + Tatoeba + Linguee)
+ * Returns combined results with priority: Wiktionary > Linguee > MyMemory (for translation only)
+ */
+async function fetchFromFreeAPIs(word: string, targetLanguage: string, nativeLanguage: string): Promise<WordContextResponse> {
+  try {
+    // Call all 3 APIs in parallel
+    const [wiktResult, tatoResult, lingueeResult] = await Promise.allSettled([
+      fetchFromWiktionary(word, targetLanguage, nativeLanguage),
+      fetchFromTatoeba(word, targetLanguage, nativeLanguage, 15),
+      fetchFromLinguee(word, targetLanguage, nativeLanguage)
+    ]);
+
+    // Extract values (handle rejections)
+    const wikt = wiktResult.status === 'fulfilled' ? wiktResult.value : null;
+    const tato = tatoResult.status === 'fulfilled' ? tatoResult.value : [];
+    const ling = lingueeResult.status === 'fulfilled' ? lingueeResult.value : null;
+
+    // Combine with priority: Wiktionary > Linguee > MyMemory (for translation)
+    let translation = wikt?.translation || ling?.translation || '';
+    const definition = wikt?.definition || ling?.definition || '';
+    const partOfSpeech = wikt?.partOfSpeech || '';
+    const pronunciation = wikt?.pronunciation || '';
+    const examples = tato && tato.length > 0 ? tato : (ling?.examples || []);
+
+    // If still no translation, try MyMemory as absolute fallback
+    if (!translation || translation.trim().length === 0) {
+      try {
+        const mymemResult = await translateWord({
+          word,
+          fromLang: targetLanguage,
+          toLang: nativeLanguage
+        });
+        translation = mymemResult.translation;
+      } catch {
+        // MyMemory also failed
+      }
+    }
+
+    // Validate: must have translation at minimum
+    if (!translation || translation.trim().length === 0) {
+      throw new Error('No translation available from any source');
+    }
+
+    return {
+      translation: translation.trim(),
+      definition: definition?.trim() || '',
+      partOfSpeech: partOfSpeech?.trim() || '',
+      pronunciation: pronunciation?.trim() || '',
+      examples: examples
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[Kalaama] Free APIs failed:', errorMsg);
+    throw new Error('Unable to fetch word info. Please try again.');
+  }
+}
+
 // Message handler
+console.log('[Kalaama SW] Registering message listener...');
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
+  console.log('[Kalaama SW] Received message:', message.type, 'from:', sender.tab ? `tab ${sender.tab.id}` : 'extension');
   handleMessage(message, sender)
-    .then(sendResponse)
-    .catch((error) => sendResponse({ error: error.message }));
+    .then((response) => {
+      console.log('[Kalaama SW] Sending response for:', message.type);
+      sendResponse(response);
+    })
+    .catch((error) => {
+      console.error('[Kalaama SW] Error handling:', message.type, error);
+      sendResponse({ error: error.message });
+    });
   return true; // Keep channel open for async response
 });
+console.log('[Kalaama SW] Message listener registered!');
 
 /**
  * Main message handler - routes messages to appropriate functions
@@ -97,16 +896,7 @@ async function handleMessage(
     case 'READING_MODE_STATUS':
     case 'READING_WORD_CLICK':
       // Forward to side panel
-      if (message.type === 'READING_WORD_CLICK') {
-        console.log('='.repeat(50));
-        console.log('[TRACE 2/5] Service Worker - Received READING_WORD_CLICK');
-        console.log('  Payload:', JSON.stringify(message.payload, null, 2));
-        console.log('  Forwarding to side panel...');
-      }
       await sendToSidePanel(message);
-      if (message.type === 'READING_WORD_CLICK') {
-        console.log('[TRACE 2/5] Forwarded to side panel');
-      }
       return { forwarded: true };
 
     // Grammar analysis for reading mode
@@ -237,7 +1027,6 @@ async function saveWord(payload: SaveWordPayload): Promise<unknown> {
  */
 async function translateWord(payload: TranslateWordPayload): Promise<{ translation: string; source: string }> {
   const { word, fromLang, toLang } = payload;
-  console.log('[TRACE translateWord] Called with:', { word, fromLang, toLang });
 
   // Try MyMemory first (most reliable free option)
   try {
@@ -247,39 +1036,31 @@ async function translateWord(payload: TranslateWordPayload): Promise<{ translati
       de: MYMEMORY_EMAIL,
     });
 
-    console.log('[TRACE translateWord] Trying MyMemory API...');
     const response = await fetch(`https://api.mymemory.translated.net/get?${params}`);
     const data = await response.json();
-    console.log('[TRACE translateWord] MyMemory response:', data);
 
     if (data.responseStatus === 200) {
-      const result = {
+      return {
         translation: data.responseData.translatedText,
         source: 'mymemory',
       };
-      console.log('[TRACE translateWord] MyMemory success:', result);
-      return result;
     }
   } catch (error) {
-    console.warn('[TRACE translateWord] MyMemory failed:', error);
+    console.warn('[Kalaama] MyMemory translation failed');
   }
 
   // Fallback to Google Translate (unofficial)
   try {
-    console.log('[TRACE translateWord] Trying Google Translate fallback...');
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${fromLang}&tl=${toLang}&dt=t&q=${encodeURIComponent(word)}`;
     const response = await fetch(url);
     const data = await response.json();
-    console.log('[TRACE translateWord] Google response:', data);
 
-    const result = {
+    return {
       translation: data[0][0][0],
       source: 'google-free',
     };
-    console.log('[TRACE translateWord] Google success:', result);
-    return result;
   } catch (error) {
-    console.error('[TRACE translateWord] All translation APIs failed:', error);
+    console.warn('[Kalaama] All translation APIs failed');
     throw new Error('Translation failed');
   }
 }
@@ -515,11 +1296,13 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
  */
 async function sendToSidePanel(message: unknown): Promise<void> {
   try {
+    console.log('[Kalaama SW] Forwarding to side panel:', (message as any).type);
     // Send to all extension pages (including side panel)
-    const views = chrome.runtime.sendMessage(message);
+    await chrome.runtime.sendMessage(message);
+    console.log('[Kalaama SW] Message forwarded successfully');
   } catch (error) {
     // Side panel might not be open
-    console.debug('[Kalaama] Could not send to side panel:', error);
+    console.debug('[Kalaama SW] Could not send to side panel:', error);
   }
 }
 
@@ -558,53 +1341,117 @@ async function forwardToContentScript(message: Message): Promise<unknown> {
 }
 
 /**
- * Get AI word context using Google Gemini API
+ * Get AI word context using Google Gemini API with aggressive caching
+ * Flow: Cache lookup → Vocabulary check → Rate-limited API call → Store results
  */
 async function getWordContext(payload: WordContextPayload): Promise<WordContextResponse> {
-  console.log('='.repeat(50));
-  console.log('[TRACE 4/5] Service Worker - getWordContext()');
-  console.log('  Payload:', JSON.stringify(payload, null, 2));
-
   const { word, sentence, targetLanguage, nativeLanguage } = payload;
 
-  // Get API key from storage
-  const { gemini_api_key } = await chrome.storage.local.get('gemini_api_key');
-  console.log('[TRACE 4/5] Gemini API key present:', !!gemini_api_key);
+  // Generate cache key
+  const cacheKey = generateCacheKey(word, targetLanguage, nativeLanguage);
 
-  // If no API key, fall back to basic translation
-  if (!gemini_api_key) {
-    console.log('[TRACE 4/5] No Gemini API key, falling back to basic translation');
-    const translation = await translateWord({
-      word,
-      fromLang: targetLanguage,
-      toLang: nativeLanguage
-    });
-    console.log('[TRACE 4/5] Basic translation result:', translation);
-    return {
-      definition: '',
-      partOfSpeech: '',
-      examples: [],
-      translation: translation.translation
-    };
+  // Tier 1: Check 3-tier cache system (memory → storage)
+  const cachedResult = await getCachedWordContext(cacheKey);
+  if (cachedResult) {
+    return cachedResult;
   }
 
+  // Tier 2: Check vocabulary table for previously saved word
+  const vocabularyResult = await getWordFromVocabulary(word, targetLanguage);
+  if (vocabularyResult) {
+    // Store in cache for future access
+    await setCachedWordContext(cacheKey, vocabularyResult);
+    return vocabularyResult;
+  }
+
+  // Deduplication: If same request is in-flight, return existing promise
+  const result = await executeWithDeduplication(cacheKey, async () => {
+    // Priority queue: enqueue with priority 1 (user-facing request)
+    return requestQueue.enqueue(
+      () => fetchWordContextFromGemini(word, sentence, targetLanguage, nativeLanguage, cacheKey),
+      1 // User-facing priority
+    );
+  });
+
+  return result;
+}
+
+/**
+ * Internal function: Fetch word context with fallback chain
+ * Priority: Claude (primary) → Gemini (fallback) → MyMemory (last resort)
+ */
+async function fetchWordContextFromGemini(
+  word: string,
+  sentence: string | undefined,
+  targetLanguage: string,
+  nativeLanguage: string,
+  cacheKey: string
+): Promise<WordContextResponse> {
+  // Get API keys from storage or environment
+  const claude_api_key = await getApiKey('claude_api_key');
+  const gemini_api_key = await getApiKey('gemini_api_key');
+
+  // Try Claude first if available
+  if (claude_api_key) {
+    try {
+      const result = await fetchWordContextFromClaude(word, sentence, targetLanguage, nativeLanguage);
+      await setCachedWordContext(cacheKey, result);
+      return result;
+    } catch (error) {
+      console.warn('[Kalaama] Claude API failed, trying free APIs');
+    }
+  }
+
+  // Try free APIs (Wiktionary + Tatoeba + Linguee) - no rate limits
   try {
-    const languageNames: Record<string, string> = {
-      en: 'English', es: 'Spanish', fr: 'French', de: 'German',
-      it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
-      ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
-    };
+    const result = await fetchFromFreeAPIs(word, targetLanguage, nativeLanguage);
+    await setCachedWordContext(cacheKey, result);
+    return result;
+  } catch (error) {
+    console.warn('[Kalaama] Free APIs failed, trying Gemini as last resort');
+  }
 
-    const targetLangName = languageNames[targetLanguage] || targetLanguage;
-    const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+  // Final fallback to Gemini if available
+  if (gemini_api_key) {
+    try {
+      const result = await fetchWordContextFromGeminiAPI(word, sentence, targetLanguage, nativeLanguage);
+      await setCachedWordContext(cacheKey, result);
+      return result;
+    } catch (error) {
+      console.warn('[Kalaama] Gemini API failed, no more fallbacks');
+    }
+  }
 
-    // Check if we have meaningful sentence context
-    const hasContext = sentence && sentence.trim().toLowerCase() !== word.toLowerCase() && sentence.length > word.length + 5;
-    console.log('[TRACE 4/5] Has meaningful context:', hasContext);
-    console.log('[TRACE 4/5] Target language:', targetLangName, '| Native language:', nativeLangName);
+  // All APIs exhausted
+  throw new Error('Unable to fetch word info. Please check your connection and try again.');
+}
 
-    const prompt = hasContext
-      ? `For the ${targetLangName} word "${word}" appearing in the sentence "${sentence}", provide:
+/**
+ * Fetch word context from Claude API with retry logic
+ */
+async function fetchWordContextFromClaude(
+  word: string,
+  sentence: string | undefined,
+  targetLanguage: string,
+  nativeLanguage: string
+): Promise<WordContextResponse> {
+  const claude_api_key = await getApiKey('claude_api_key');
+  if (!claude_api_key) throw new Error('Claude API key not available');
+
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+  };
+
+  const targetLangName = languageNames[targetLanguage] || targetLanguage;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  // Check if we have meaningful sentence context
+  const hasContext = sentence && sentence.trim().toLowerCase() !== word.toLowerCase() && sentence.length > word.length + 5;
+
+  const prompt = hasContext
+    ? `For the ${targetLangName} word "${word}" appearing in the sentence "${sentence}", provide:
 1. Definition in ${nativeLangName}
 2. Part of speech (noun, verb, adjective, adverb, etc.)
 3. 2-3 example sentences using this word with ${nativeLangName} translations
@@ -619,7 +1466,7 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
   "pronunciation": "/pronunciation/",
   "translation": "word translation"
 }`
-      : `Translate and explain the ${targetLangName} word "${word}":
+    : `Translate and explain the ${targetLangName} word "${word}":
 1. Provide the ${nativeLangName} translation
 2. Definition in ${nativeLangName}
 3. Part of speech (noun, verb, adjective, adverb, etc.)
@@ -634,12 +1481,115 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
   "translation": "word translation"
 }`;
 
-    console.log('[TRACE 4/5] Sending request to Gemini API...');
-    console.log('[TRACE 4/5] ========== FULL PROMPT ==========');
-    console.log(prompt);
-    console.log('[TRACE 4/5] ========== END PROMPT ==========');
+  // Execute fetch with retry logic
+  const response = await executeWithRetry(
+    () => fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': claude_api_key,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    }),
+    { maxRetries: 3, initialDelayMs: 1000 }
+  );
 
-    const response = await fetch(
+  if (!response.ok) {
+    throw new Error(`Claude API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const textContent = data.content?.[0]?.text;
+
+  if (!textContent) {
+    throw new Error('No response from Claude');
+  }
+
+  // Extract JSON from response
+  let jsonStr = textContent.trim();
+  const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                    jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                    jsonStr.match(/(\{[\s\S]*\})/);
+  if (jsonMatch) {
+    jsonStr = jsonMatch[1].trim();
+  }
+
+  const result = JSON.parse(jsonStr);
+
+  const wordContextResult: WordContextResponse = {
+    definition: result.definition || '',
+    partOfSpeech: result.partOfSpeech || result.part_of_speech || '',
+    examples: Array.isArray(result.examples) ? result.examples : [],
+    pronunciation: result.pronunciation || '',
+    translation: result.translation || word
+  };
+
+  return wordContextResult;
+}
+
+/**
+ * Fetch word context from Gemini API with retry logic
+ */
+async function fetchWordContextFromGeminiAPI(
+  word: string,
+  sentence: string | undefined,
+  targetLanguage: string,
+  nativeLanguage: string
+): Promise<WordContextResponse> {
+  const gemini_api_key = await getApiKey('gemini_api_key');
+  if (!gemini_api_key) throw new Error('Gemini API key not available');
+
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+  };
+
+  const targetLangName = languageNames[targetLanguage] || targetLanguage;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  // Check if we have meaningful sentence context
+  const hasContext = sentence && sentence.trim().toLowerCase() !== word.toLowerCase() && sentence.length > word.length + 5;
+
+  const prompt = hasContext
+    ? `For the ${targetLangName} word "${word}" appearing in the sentence "${sentence}", provide:
+1. Definition in ${nativeLangName}
+2. Part of speech (noun, verb, adjective, adverb, etc.)
+3. 2-3 example sentences using this word with ${nativeLangName} translations
+4. Pronunciation guide (phonetic) if applicable
+5. Translation to ${nativeLangName}
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "definition": "the definition here",
+  "partOfSpeech": "noun/verb/etc",
+  "examples": ["example 1 - translation 1", "example 2 - translation 2"],
+  "pronunciation": "/pronunciation/",
+  "translation": "word translation"
+}`
+    : `Translate and explain the ${targetLangName} word "${word}":
+1. Provide the ${nativeLangName} translation
+2. Definition in ${nativeLangName}
+3. Part of speech (noun, verb, adjective, adverb, etc.)
+4. 2-3 example sentences using this word with ${nativeLangName} translations
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "definition": "the definition here",
+  "partOfSpeech": "noun/verb/etc",
+  "examples": ["example 1 - translation 1", "example 2 - translation 2"],
+  "pronunciation": "/pronunciation/",
+  "translation": "word translation"
+}`;
+
+  // Execute fetch with retry logic
+  const response = await executeWithRetry(
+    () => fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_api_key}`,
       {
         method: 'POST',
@@ -649,104 +1599,101 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
           generationConfig: { temperature: 0.3 }
         })
       }
-    );
+    ),
+    { maxRetries: 3, initialDelayMs: 1000 }
+  );
 
-    console.log('[TRACE 4/5] Gemini response status:', response.status);
-
-    if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!textContent) {
-      console.error('[TRACE 4/5] No text content from Gemini');
-      throw new Error('No response from Gemini');
-    }
-
-    console.log('[TRACE 4/5] ========== FULL API RESPONSE ==========');
-    console.log(textContent);
-    console.log('[TRACE 4/5] ========== END RESPONSE ==========');
-
-    // Extract JSON from response (handle markdown code blocks)
-    let jsonStr = textContent.trim();
-
-    // Try different patterns to extract JSON
-    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
-                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
-                      jsonStr.match(/(\{[\s\S]*\})/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1].trim();
-    }
-
-    console.log('[TRACE 4/5] Extracted JSON string:', jsonStr);
-
-    let result;
-    try {
-      result = JSON.parse(jsonStr);
-      console.log('[TRACE 4/5] Parsed JSON result:', result);
-    } catch (parseError) {
-      console.error('[TRACE 4/5] Failed to parse JSON:', parseError);
-      // Try to extract info manually if JSON parsing fails
-      const basicTranslation = await translateWord({
-        word,
-        fromLang: targetLanguage,
-        toLang: nativeLanguage
-      });
-      return {
-        definition: textContent.substring(0, 200), // Use raw text as definition
-        partOfSpeech: '',
-        examples: [],
-        pronunciation: '',
-        translation: basicTranslation.translation
-      };
-    }
-
-    // Ensure all required fields exist with defaults
-    const wordContextResult: WordContextResponse = {
-      definition: result.definition || '',
-      partOfSpeech: result.partOfSpeech || result.part_of_speech || '',
-      examples: Array.isArray(result.examples) ? result.examples : [],
-      pronunciation: result.pronunciation || '',
-      translation: result.translation || word
-    };
-
-    console.log('[TRACE 5/5] ========== FINAL RESULT ==========');
-    console.log(JSON.stringify(wordContextResult, null, 2));
-    console.log('[TRACE 5/5] ========== END RESULT ==========');
-    return wordContextResult;
-  } catch (error) {
-    console.error('[TRACE 4/5] Gemini API failed:', error);
-    console.log('[TRACE 4/5] Falling back to basic translation...');
-    // Fall back to basic translation
-    const translation = await translateWord({
-      word,
-      fromLang: targetLanguage,
-      toLang: nativeLanguage
-    });
-    console.log('[TRACE 5/5] Fallback translation result:', translation);
-    console.log('='.repeat(50));
-    return {
-      definition: '',
-      partOfSpeech: '',
-      examples: [],
-      translation: translation.translation
-    };
+  if (!response.ok) {
+    throw new Error(`Gemini API error: ${response.status}`);
   }
+
+  const data = await response.json();
+  const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!textContent) {
+    throw new Error('No response from Gemini');
+  }
+
+  // Extract JSON from response (handle markdown code blocks)
+  let jsonStr = textContent.trim();
+
+  // Try different patterns to extract JSON
+  const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                    jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                    jsonStr.match(/(\{[\s\S]*\})/);
+  if (jsonMatch) {
+    jsonStr = jsonMatch[1].trim();
+  }
+
+  const result = JSON.parse(jsonStr);
+
+  const wordContextResult: WordContextResponse = {
+    definition: result.definition || '',
+    partOfSpeech: result.partOfSpeech || result.part_of_speech || '',
+    examples: Array.isArray(result.examples) ? result.examples : [],
+    pronunciation: result.pronunciation || '',
+    translation: result.translation || word
+  };
+
+  return wordContextResult;
 }
 
 /**
- * Get word examples from Gemini AI
+ * Get word examples from Gemini AI with caching
+ * Priority 0 (background task) - lower priority than word context
  */
 async function getWordExamples(payload: GetWordExamplesPayload): Promise<WordExamplesResponse> {
   const { word, targetLanguage, nativeLanguage, count } = payload;
 
-  const storage = await chrome.storage.local.get(['gemini_api_key']);
-  const gemini_api_key = storage.gemini_api_key;
+  // Generate cache key
+  const cacheKey = generateExamplesCacheKey(word, targetLanguage, nativeLanguage, count);
 
+  // Tier 1: Check cache
+  const cachedResult = await getCachedWordExamples(cacheKey);
+  if (cachedResult) {
+    return cachedResult;
+  }
+
+  // Deduplication: If same request is in-flight, return existing promise
+  const result = await executeWithDeduplication(cacheKey, async () => {
+    // Priority queue: enqueue with priority 0 (background task)
+    return requestQueue.enqueue(
+      () => fetchWordExamplesFromGemini(word, targetLanguage, nativeLanguage, count, cacheKey),
+      0 // Background priority
+    );
+  });
+
+  return result;
+}
+
+/**
+ * Internal function: Fetch word examples with fallback chain
+ * Priority: Claude (primary) → Gemini (fallback)
+ */
+async function fetchWordExamplesFromGemini(
+  word: string,
+  targetLanguage: string,
+  nativeLanguage: string,
+  count: number,
+  cacheKey: string
+): Promise<WordExamplesResponse> {
+  const claude_api_key = await getApiKey('claude_api_key');
+  const gemini_api_key = await getApiKey('gemini_api_key');
+
+  // Try Claude first if available
+  if (claude_api_key) {
+    try {
+      const result = await fetchWordExamplesFromClaudeAPI(word, targetLanguage, nativeLanguage, count);
+      await setCachedWordExamples(cacheKey, result);
+      return result;
+    } catch (error) {
+      console.warn('[Kalaama] Claude examples API failed, trying Gemini');
+    }
+  }
+
+  // Fall back to Gemini if available
   if (!gemini_api_key) {
-    throw new Error('Gemini API key not configured');
+    throw new Error('No AI API keys configured');
   }
 
   const languageNames: Record<string, string> = {
@@ -776,45 +1723,184 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
   ]
 }`;
 
-  console.log('[Word Examples] Sending request to Gemini...');
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_api_key}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7 }
-      })
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Gemini API error: ${response.status}`);
+  try {
+    const result = await fetchWordExamplesFromGeminiAPI(word, targetLanguage, nativeLanguage, count);
+    await setCachedWordExamples(cacheKey, result);
+    return result;
+  } catch (error) {
+    console.warn('[Kalaama] Failed to fetch examples from all APIs');
+    throw error;
   }
+}
 
-  const data = await response.json();
-  const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+/**
+ * Fetch word examples from Claude API with retry logic
+ */
+async function fetchWordExamplesFromClaudeAPI(
+  word: string,
+  targetLanguage: string,
+  nativeLanguage: string,
+  count: number
+): Promise<WordExamplesResponse> {
+  const claude_api_key = await getApiKey('claude_api_key');
+  if (!claude_api_key) throw new Error('Claude API key not available');
 
-  if (!textContent) {
-    throw new Error('No response from Gemini');
-  }
-
-  // Extract JSON from response
-  let jsonStr = textContent.trim();
-  const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
-                    jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
-                    jsonStr.match(/(\{[\s\S]*\})/);
-  if (jsonMatch) {
-    jsonStr = jsonMatch[1].trim();
-  }
-
-  const result = JSON.parse(jsonStr);
-
-  return {
-    examples: Array.isArray(result.examples) ? result.examples : []
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
   };
+
+  const targetLangName = languageNames[targetLanguage] || targetLanguage;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  const prompt = `Generate ${count} diverse example sentences using the ${targetLangName} word "${word}".
+
+Requirements:
+- Each example should show different contexts and uses of the word
+- Include the ${nativeLangName} translation for each sentence
+- Examples should range from simple to complex
+- Vary the sentence structures and topics
+- Make examples practical and useful for language learners
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "examples": [
+    "${targetLangName} sentence 1 - ${nativeLangName} translation 1",
+    "${targetLangName} sentence 2 - ${nativeLangName} translation 2",
+    ...
+  ]
+}`;
+
+  try {
+    const response = await executeWithRetry(
+      () => fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': claude_api_key,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 500,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      }),
+      { maxRetries: 3, initialDelayMs: 1000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Claude API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const textContent = data.content?.[0]?.text;
+
+    if (!textContent) {
+      throw new Error('No response from Claude');
+    }
+
+    // Extract JSON from response
+    let jsonStr = textContent.trim();
+    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    const result = JSON.parse(jsonStr);
+    return {
+      examples: Array.isArray(result.examples) ? result.examples : []
+    };
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * Fetch word examples from Gemini API with retry logic
+ */
+async function fetchWordExamplesFromGeminiAPI(
+  word: string,
+  targetLanguage: string,
+  nativeLanguage: string,
+  count: number
+): Promise<WordExamplesResponse> {
+  const gemini_api_key = await getApiKey('gemini_api_key');
+  if (!gemini_api_key) throw new Error('Gemini API key not available');
+
+  const languageNames: Record<string, string> = {
+    en: 'English', es: 'Spanish', fr: 'French', de: 'German',
+    it: 'Italian', pt: 'Portuguese', ru: 'Russian', zh: 'Chinese',
+    ja: 'Japanese', ko: 'Korean', ar: 'Arabic', wo: 'Wolof'
+  };
+
+  const targetLangName = languageNames[targetLanguage] || targetLanguage;
+  const nativeLangName = languageNames[nativeLanguage] || nativeLanguage;
+
+  const prompt = `Generate ${count} diverse example sentences using the ${targetLangName} word "${word}".
+
+Requirements:
+- Each example should show different contexts and uses of the word
+- Include the ${nativeLangName} translation for each sentence
+- Examples should range from simple to complex
+- Vary the sentence structures and topics
+- Make examples practical and useful for language learners
+
+IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
+{
+  "examples": [
+    "${targetLangName} sentence 1 - ${nativeLangName} translation 1",
+    "${targetLangName} sentence 2 - ${nativeLangName} translation 2",
+    ...
+  ]
+}`;
+
+  try {
+    const response = await executeWithRetry(
+      () => fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${gemini_api_key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.7 }
+          })
+        }
+      ),
+      { maxRetries: 3, initialDelayMs: 1000 }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gemini API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!textContent) {
+      throw new Error('No response from Gemini');
+    }
+
+    // Extract JSON from response
+    let jsonStr = textContent.trim();
+    const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/```\s*([\s\S]*?)\s*```/) ||
+                      jsonStr.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    const result = JSON.parse(jsonStr);
+    return {
+      examples: Array.isArray(result.examples) ? result.examples : []
+    };
+  } catch (error) {
+    throw error;
+  }
 }
 
 // ============================================
@@ -827,9 +1913,14 @@ IMPORTANT: Respond ONLY with valid JSON in this exact format, no other text:
 async function getAITutorResponse(payload: AITutorPayload): Promise<AITutorResponse> {
   const { userResponse, lessonContext, currentPrompt, language, nativeLanguage, conversationHistory } = payload;
 
-  // Get AI provider and API key from storage
-  const storage = await chrome.storage.local.get(['ai_provider', 'gemini_api_key', 'openai_api_key', 'claude_api_key']);
+  // Get AI provider from storage
+  const storage = await chrome.storage.local.get(['ai_provider']);
   const provider: AIProvider = storage.ai_provider || 'gemini';
+
+  // Get API keys with environment fallback
+  const gemini_api_key = await getApiKey('gemini_api_key');
+  const openai_api_key = await getApiKey('openai_api_key');
+  const claude_api_key = await getApiKey('claude_api_key');
 
   const languageNames: Record<string, string> = {
     en: 'English', es: 'Spanish', fr: 'French', de: 'German',
@@ -879,14 +1970,14 @@ IMPORTANT: Respond ONLY with valid JSON:
 
     switch (provider) {
       case 'openai':
-        aiResponse = await callOpenAI(systemPrompt, storage.openai_api_key);
+        aiResponse = await callOpenAI(systemPrompt, openai_api_key);
         break;
       case 'claude':
-        aiResponse = await callClaude(systemPrompt, storage.claude_api_key);
+        aiResponse = await callClaude(systemPrompt, claude_api_key);
         break;
       case 'gemini':
       default:
-        aiResponse = await callGemini(systemPrompt, storage.gemini_api_key);
+        aiResponse = await callGemini(systemPrompt, gemini_api_key);
         break;
     }
 
@@ -1098,9 +2189,14 @@ async function callClaude(prompt: string, apiKey: string): Promise<string> {
 async function getConversationTutorResponse(payload: ConversationTutorPayload): Promise<ConversationTutorResponse> {
   const { phase, unit, userResponse, currentVocab, currentPhrase, vocabMastered, conversationHistory, targetLanguage, nativeLanguage } = payload;
 
-  // Get AI provider and API key from storage
-  const storage = await chrome.storage.local.get(['ai_provider', 'gemini_api_key', 'openai_api_key', 'claude_api_key']);
+  // Get AI provider from storage
+  const storage = await chrome.storage.local.get(['ai_provider']);
   const provider: AIProvider = storage.ai_provider || 'gemini';
+
+  // Get API keys with environment fallback
+  const gemini_api_key = await getApiKey('gemini_api_key');
+  const openai_api_key = await getApiKey('openai_api_key');
+  const claude_api_key = await getApiKey('claude_api_key');
 
   const languageNames: Record<string, string> = {
     en: 'English', es: 'Spanish', fr: 'French', de: 'German',
@@ -1140,14 +2236,14 @@ async function getConversationTutorResponse(payload: ConversationTutorPayload): 
 
     switch (provider) {
       case 'openai':
-        aiResponse = await callOpenAI(systemPrompt, storage.openai_api_key);
+        aiResponse = await callOpenAI(systemPrompt, openai_api_key);
         break;
       case 'claude':
-        aiResponse = await callClaude(systemPrompt, storage.claude_api_key);
+        aiResponse = await callClaude(systemPrompt, claude_api_key);
         break;
       case 'gemini':
       default:
-        aiResponse = await callGemini(systemPrompt, storage.gemini_api_key);
+        aiResponse = await callGemini(systemPrompt, gemini_api_key);
         break;
     }
 
@@ -1440,8 +2536,8 @@ function buildFallbackResponse(
 async function getGrammarAnalysis(payload: GrammarAnalysisPayload): Promise<GrammarAnalysisResponse> {
   const { text, language } = payload;
 
-  // Get API key from storage
-  const { gemini_api_key } = await chrome.storage.local.get('gemini_api_key');
+  // Get API key from storage or environment
+  const gemini_api_key = await getApiKey('gemini_api_key');
 
   // If no API key, return empty analysis
   if (!gemini_api_key) {
@@ -1582,8 +2678,8 @@ async function textToSpeech(payload: TTSPayload): Promise<TTSResponse> {
   const { text, language, voiceId, speed } = payload;
 
   // Get ElevenLabs API key and voice settings from storage
-  const storage = await chrome.storage.local.get(['elevenlabs_api_key', 'voice_settings']);
-  const apiKey = storage.elevenlabs_api_key;
+  const storage = await chrome.storage.local.get(['voice_settings']);
+  const apiKey = await getApiKey('elevenlabs_api_key');
 
   if (!apiKey) {
     throw new Error('ElevenLabs API key not configured');
@@ -1651,6 +2747,88 @@ function estimateAudioDuration(text: string): number {
   const words = text.split(/\s+/).length;
   return (words / 150) * 60; // Duration in seconds
 }
+
+// =============================================================================
+// BADGE UPDATE - Show due words count on extension icon
+// =============================================================================
+
+/**
+ * Update extension badge with due words count
+ * In LOCAL MODE, calculates from local storage
+ * Will use Supabase query when integrated
+ */
+async function updateBadgeCount(): Promise<void> {
+  try {
+    // Get learning progress from local storage
+    const result = await chrome.storage.local.get('learning_progress');
+    const allProgress = result['learning_progress'] || {};
+
+    // Get current settings to determine target language
+    const settings = await getSettings();
+    const language = (settings as Record<string, unknown>)?.target_language as string || 'es';
+
+    // Calculate due count
+    const languageProgress = allProgress[language];
+    if (!languageProgress) {
+      // No progress yet
+      chrome.action.setBadgeText({ text: '' });
+      return;
+    }
+
+    const now = new Date();
+    let dueCount = 0;
+
+    // Count words where next_review_date <= NOW
+    // Note: In LOCAL MODE, this iterates through completed lessons
+    // In SUPABASE MODE, this would be a direct database query
+    const completedLessons = languageProgress.completedLessons || {};
+    for (const lessonId in completedLessons) {
+      const lesson = completedLessons[lessonId];
+      if (lesson.next_review_date && new Date(lesson.next_review_date) <= now) {
+        dueCount++;
+      }
+    }
+
+    // Update badge
+    if (dueCount > 0) {
+      chrome.action.setBadgeText({ text: String(dueCount) });
+      chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' }); // Green
+    } else {
+      chrome.action.setBadgeText({ text: '' }); // Clear badge
+    }
+  } catch (error) {
+    console.warn('[Kalaama] Failed to update badge count:', error);
+    // Don't throw - this is non-critical
+  }
+}
+
+/**
+ * Set up periodic badge updates
+ */
+function setupBadgeUpdates(): void {
+  // Update badge immediately
+  updateBadgeCount().catch(() => {});
+
+  // Set up alarm to update badge every hour
+  chrome.alarms.create('updateBadge', { periodInMinutes: 60 });
+
+  // Listen for alarm
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'updateBadge') {
+      updateBadgeCount().catch(() => {});
+    }
+  });
+
+  // Also update badge when settings or vocabulary changes
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (changes.learning_progress || changes.settings) {
+      updateBadgeCount().catch(() => {});
+    }
+  });
+}
+
+// Initialize badge updates when service worker starts
+setupBadgeUpdates();
 
 // Log when service worker starts
 console.log('[Kalaama] Service worker initialized (LOCAL MODE - Supabase disabled)');

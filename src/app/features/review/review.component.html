@@ -1,0 +1,176 @@
+<div class="review-container">
+  <!-- Loading State -->
+  <div *ngIf="isLoading" class="loading-state">
+    <div class="spinner"></div>
+    <p>Loading review session...</p>
+  </div>
+
+  <!-- Error State -->
+  <div *ngIf="hasError" class="error-state">
+    <div class="error-message">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
+      <p>{{ errorMessage }}</p>
+    </div>
+    <button class="btn btn-primary" (click)="goBack()">Back to Vocabulary</button>
+  </div>
+
+  <!-- Active Review Session -->
+  <div *ngIf="sessionActive && currentCard && !sessionComplete" class="review-session">
+    <!-- Header with Progress -->
+    <div class="review-header">
+      <div class="progress-info">
+        <span class="progress-text">{{ currentIndex + 1 }} / {{ totalWords }}</span>
+        <div class="progress-bar">
+          <div class="progress-fill" [style.width.%]="progressPercent"></div>
+        </div>
+      </div>
+      <button class="btn-close" (click)="goBack()" title="Exit review">×</button>
+    </div>
+
+    <!-- Flashcard Mode -->
+    <div *ngIf="currentCard.mode === 'flashcard'" class="review-card flashcard-mode">
+      <div class="flashcard" [class.flipped]="currentCard.showAnswer">
+        <!-- Front of Card -->
+        <div class="card-front" *ngIf="!currentCard.showAnswer">
+          <div class="card-inner">
+            <h2 class="word-text">{{ currentCard.word.word }}</h2>
+            <p class="pronunciation" *ngIf="currentCard.word.pronunciation">
+              [{{ currentCard.word.pronunciation }}]
+            </p>
+          </div>
+          <button class="btn btn-primary btn-large" (click)="flipCard()">
+            Show Answer
+          </button>
+        </div>
+
+        <!-- Back of Card -->
+        <div class="card-back" *ngIf="currentCard.showAnswer">
+          <div class="card-inner">
+            <h3 class="translation">{{ currentCard.word.translation }}</h3>
+
+            <div class="word-details" *ngIf="currentCard.word.part_of_speech || currentCard.word.definition">
+              <p class="part-of-speech" *ngIf="currentCard.word.part_of_speech">
+                <em>{{ currentCard.word.part_of_speech }}</em>
+              </p>
+              <p class="definition" *ngIf="currentCard.word.definition">
+                {{ currentCard.word.definition }}
+              </p>
+            </div>
+
+            <div class="examples" *ngIf="currentCard.word.aiExamples && currentCard.word.aiExamples.length > 0">
+              <p class="examples-label">Example:</p>
+              <p class="example-text">{{ currentCard.word.aiExamples[0] }}</p>
+            </div>
+          </div>
+
+          <!-- Grade Buttons -->
+          <div class="grade-buttons" *ngIf="!currentCard.isGraded">
+            <button class="btn btn-grade btn-again" (click)="submitFlashcardGrade(0)" title="I forgot this word">
+              Again
+            </button>
+            <button class="btn btn-grade btn-hard" (click)="submitFlashcardGrade(2)" title="Difficult to recall">
+              Hard
+            </button>
+            <button class="btn btn-grade btn-good" (click)="submitFlashcardGrade(4)" title="Good, but hesitated">
+              Good
+            </button>
+            <button class="btn btn-grade btn-easy" (click)="submitFlashcardGrade(5)" title="Perfect recall">
+              Easy
+            </button>
+          </div>
+
+          <div class="grading-feedback" *ngIf="currentCard.isGraded">
+            <p class="feedback-message">Review submitted! Loading next word...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Typing Mode -->
+    <div *ngIf="currentCard.mode === 'typing'" class="review-card typing-mode">
+      <div class="typing-card">
+        <h2 class="word-to-translate">{{ currentCard.word.word }}</h2>
+
+        <div *ngIf="!currentCard.isGraded" class="typing-input-group">
+          <input
+            type="text"
+            class="typing-input"
+            [(ngModel)]="currentCard.typedAnswer"
+            placeholder="Type the translation..."
+            (keyup.enter)="checkAnswer()"
+            autofocus>
+          <button class="btn btn-primary btn-check" (click)="checkAnswer()">Check</button>
+        </div>
+
+        <div *ngIf="currentCard.isGraded" class="typing-feedback">
+          <div class="feedback-result" [class.correct]="currentCard.isCorrect" [class.incorrect]="!currentCard.isCorrect">
+            <p class="result-text">
+              {{ currentCard.isCorrect ? '✓ Correct!' : '✗ Incorrect' }}
+            </p>
+            <p class="correct-answer">
+              Correct translation: <strong>{{ currentCard.word.translation }}</strong>
+            </p>
+          </div>
+          <button class="btn btn-primary btn-next" (click)="nextCard()">Next Word</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skip Button -->
+    <div class="card-actions">
+      <button class="btn btn-secondary" (click)="skipCard()" *ngIf="!currentCard.isGraded">
+        Skip
+      </button>
+    </div>
+  </div>
+
+  <!-- Session Complete State -->
+  <div *ngIf="isSessionComplete" class="session-complete">
+    <div class="complete-header">
+      <h2>Session Complete! 🎉</h2>
+    </div>
+
+    <div class="stats-summary">
+      <div class="stat-item">
+        <p class="stat-label">Words Reviewed</p>
+        <p class="stat-value">{{ sessionsReviewedCount }}</p>
+      </div>
+
+      <div class="stat-item">
+        <p class="stat-label">Accuracy</p>
+        <p class="stat-value">{{ accuracyPercent }}%</p>
+      </div>
+
+      <div class="stat-item">
+        <p class="stat-label">Correct Answers</p>
+        <p class="stat-value">{{ correctCount }} / {{ sessionsReviewedCount }}</p>
+      </div>
+
+      <div class="stat-item">
+        <p class="stat-label">Duration</p>
+        <p class="stat-value">{{ (sessionDurationSeconds / 60) | number: '1.0-0' }}m</p>
+      </div>
+    </div>
+
+    <div class="motivation-message">
+      <p *ngIf="accuracyPercent >= 80">
+        Excellent work! Your vocabulary is improving rapidly!
+      </p>
+      <p *ngIf="accuracyPercent >= 60 && accuracyPercent < 80">
+        Great effort! Keep reviewing and you'll master these words soon.
+      </p>
+      <p *ngIf="accuracyPercent < 60">
+        Good practice session! The words you found difficult will come up again soon.
+      </p>
+    </div>
+
+    <div class="session-actions">
+      <button class="btn btn-primary" (click)="restartSession()">Review More Words</button>
+      <button class="btn btn-secondary" (click)="goBack()">Back to Vocabulary</button>
+    </div>
+  </div>
+</div>

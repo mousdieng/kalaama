@@ -34,6 +34,9 @@ export interface UserSettings {
   highlight_unknown_words: boolean;
   show_pronunciation: boolean;
   theme: 'light' | 'dark' | 'auto';
+  // Review settings for spaced repetition
+  review_daily_goal?: number;      // Default: 20 words per day
+  review_modes?: ('flashcard' | 'typing')[]; // Default: ['flashcard', 'typing']
 }
 
 export interface VocabularyItem {
@@ -51,6 +54,11 @@ export interface VocabularyItem {
   review_count: number;
   last_reviewed_at?: string;
   created_at: string;
+  // SM-2 Spaced Repetition Fields
+  next_review_date?: string;     // ISO timestamp - when this word is due for review
+  ease_factor?: number;          // 1.3 - 2.5 (SM-2 difficulty multiplier)
+  interval?: number;             // Days until next review
+  repetitions?: number;          // Consecutive successful reviews
 }
 
 // Default settings
@@ -63,4 +71,6 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   highlight_unknown_words: true,
   show_pronunciation: true,
   theme: 'auto',
+  review_daily_goal: 20,
+  review_modes: ['flashcard', 'typing'],
 };

@@ -1,12 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { AuthService } from './auth.service';
-
-// =============================================================================
-// SUPABASE DISABLED - Using chrome.storage.local
-// =============================================================================
-// import { SupabaseService } from './supabase.service';
-// =============================================================================
+import { SupabaseService } from './supabase.service';
 
 export interface VocabularyItem {
   id: string;
@@ -27,15 +22,19 @@ export interface VocabularyItem {
   pronunciation?: string;
   // AI-generated detailed examples (10-20 examples)
   aiExamples?: string[];
+  // SM-2 Spaced Repetition Fields
+  last_reviewed_at?: string;
+  next_review_date?: string;     // ISO timestamp - when this word is due for review
+  ease_factor?: number;          // 1.3 - 2.5 (SM-2 difficulty multiplier)
+  interval?: number;             // Days until next review
+  repetitions?: number;          // Consecutive successful reviews
 }
 
 @Injectable({
   providedIn: 'root',
 })
 export class VocabularyService {
-  // SUPABASE DISABLED
-  // private supabase = inject(SupabaseService);
-  private authService = inject(AuthService);
+  private supabase = inject(SupabaseService);
 
   private vocabularySubject = new BehaviorSubject<VocabularyItem[]>([]);
   private loadingSubject = new BehaviorSubject<boolean>(false);
@@ -49,35 +48,26 @@ export class VocabularyService {
   }
 
   /**
-   * Load vocabulary from chrome.storage.local
+   * Load vocabulary from Supabase
    */
   async loadVocabulary(language?: string, limit = 50): Promise<void> {
-    const user = this.authService.currentUser;
-    if (!user) return;
-
     this.loadingSubject.next(true);
 
     try {
-      const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
-
-      let result = [...vocabulary];
+      let query = this.supabase.from('vocabulary').select('*');
 
       // Filter by language if specified
       if (language) {
-        result = result.filter((v: VocabularyItem) => v.language === language);
+        query = query.eq('language', language);
       }
 
-      // Sort by created_at descending
-      result.sort((a: VocabularyItem, b: VocabularyItem) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .limit(limit);
 
-      // Apply limit
-      if (limit) {
-        result = result.slice(0, limit);
-      }
+      if (error) throw error;
 
-      this.vocabularySubject.next(result);
+      this.vocabularySubject.next((data as VocabularyItem[]) || []);
     } catch (error) {
       console.error('[Kalaama] Failed to load vocabulary:', error);
     } finally {
@@ -86,111 +76,174 @@ export class VocabularyService {
   }
 
   /**
-   * Add a word to vocabulary (chrome.storage.local)
+   * Get vocabulary for a specific language
+   * Used by ReviewService for filtering words
+   */
+  async getVocabulary(language: string): Promise<VocabularyItem[]> {
+    try {
+      const { data, error } = await this.supabase
+        .from('vocabulary')
+        .select('*')
+        .eq('language', language)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      return (data as VocabularyItem[]) || [];
+    } catch (error) {
+      console.error('[Kalaama] Failed to get vocabulary:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Add a word to vocabulary (Supabase)
    */
   async addWord(word: Partial<VocabularyItem>): Promise<VocabularyItem | null> {
-    const user = this.authService.currentUser;
-    if (!user) throw new Error('Not authenticated');
+    try {
+      // Check if word already exists
+      const { data: existing } = await this.supabase
+        .from('vocabulary')
+        .select('*')
+        .eq('word', word.word)
+        .eq('language', word.language)
+        .single();
 
-    const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
+      const wordEntry: VocabularyItem = {
+        id: existing?.id || `word_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        word: word.word || '',
+        translation: word.translation || '',
+        language: word.language || 'es',
+        context_sentence: word.context_sentence,
+        video_id: word.video_id,
+        video_title: word.video_title,
+        mastery_level: existing?.mastery_level || 0,
+        review_count: existing?.review_count || 0,
+        created_at: existing?.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        definition: word.definition,
+        part_of_speech: word.part_of_speech,
+        examples: word.examples,
+        pronunciation: word.pronunciation,
+        aiExamples: existing?.aiExamples,
+      };
 
-    const wordId = `word_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // Upsert word
+      const { data, error } = await this.supabase
+        .from('vocabulary')
+        .upsert([wordEntry], { onConflict: 'id' })
+        .select()
+        .single();
 
-    // Check if word already exists
-    const existingIndex = vocabulary.findIndex(
-      (v: VocabularyItem) => v.word === word.word && v.language === word.language
-    );
+      if (error) throw error;
 
-    const wordEntry: VocabularyItem = {
-      id: existingIndex >= 0 ? vocabulary[existingIndex].id : wordId,
-      word: word.word || '',
-      translation: word.translation || '',
-      language: word.language || 'es',
-      context_sentence: word.context_sentence,
-      video_id: word.video_id,
-      video_title: word.video_title,
-      mastery_level: existingIndex >= 0 ? vocabulary[existingIndex].mastery_level : 0,
-      review_count: existingIndex >= 0 ? vocabulary[existingIndex].review_count : 0,
-      created_at: existingIndex >= 0 ? vocabulary[existingIndex].created_at : new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      // Full AI context from Gemini
-      definition: word.definition,
-      part_of_speech: word.part_of_speech,
-      examples: word.examples,
-      pronunciation: word.pronunciation,
-      // Preserve existing AI examples if updating
-      aiExamples: existingIndex >= 0 ? vocabulary[existingIndex].aiExamples : undefined,
-    };
+      // Reload vocabulary
+      await this.loadVocabulary();
 
-    if (existingIndex >= 0) {
-      vocabulary[existingIndex] = wordEntry;
-    } else {
-      vocabulary.unshift(wordEntry);
+      return data as VocabularyItem;
+    } catch (error) {
+      console.error('[Kalaama] Failed to add word:', error);
+      return null;
     }
-
-    await chrome.storage.local.set({ vocabulary });
-
-    // Update local state
-    this.vocabularySubject.next([...vocabulary]);
-
-    console.log('[Kalaama] Word added:', wordEntry.word);
-    return wordEntry;
   }
 
   /**
-   * Delete a word from vocabulary (chrome.storage.local)
+   * Delete a word from vocabulary (Supabase)
    */
   async deleteWord(wordId: string): Promise<void> {
-    const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
+    try {
+      const { error } = await this.supabase
+        .from('vocabulary')
+        .delete()
+        .eq('id', wordId);
 
-    const updatedVocabulary = vocabulary.filter((v: VocabularyItem) => v.id !== wordId);
+      if (error) throw error;
 
-    await chrome.storage.local.set({ vocabulary: updatedVocabulary });
-
-    // Update local state
-    this.vocabularySubject.next(updatedVocabulary);
-
-    console.log('[Kalaama] Word deleted:', wordId);
-  }
-
-  /**
-   * Update word mastery level (chrome.storage.local)
-   */
-  async updateMastery(wordId: string, masteryLevel: number): Promise<void> {
-    const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
-
-    const index = vocabulary.findIndex((v: VocabularyItem) => v.id === wordId);
-
-    if (index >= 0) {
-      vocabulary[index].mastery_level = masteryLevel;
-      vocabulary[index].review_count = (vocabulary[index].review_count || 0) + 1;
-      vocabulary[index].updated_at = new Date().toISOString();
-
-      await chrome.storage.local.set({ vocabulary });
-
-      // Update local state
-      this.vocabularySubject.next([...vocabulary]);
+      // Reload vocabulary
+      await this.loadVocabulary();
+    } catch (error) {
+      console.error('[Kalaama] Failed to delete word:', error);
     }
   }
 
   /**
-   * Update word with AI examples (chrome.storage.local)
+   * Update entire word object (including SM-2 spaced repetition fields)
+   * This is used by ReviewService to update review results
+   */
+  async updateWord(word: VocabularyItem): Promise<void> {
+    try {
+      const { error } = await this.supabase
+        .from('vocabulary')
+        .update({
+          mastery_level: word.mastery_level,
+          review_count: word.review_count,
+          last_reviewed_at: word.updated_at || new Date().toISOString(),
+          // SM-2 fields
+          next_review_date: (word as any).next_review_date,
+          ease_factor: (word as any).ease_factor,
+          interval: (word as any).interval,
+          repetitions: (word as any).repetitions,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', word.id);
+
+      if (error) throw error;
+
+      // Update local cache
+      const currentVocab = this.vocabularySubject.value;
+      const index = currentVocab.findIndex(v => v.id === word.id);
+      if (index >= 0) {
+        currentVocab[index] = { ...currentVocab[index], ...word };
+        this.vocabularySubject.next([...currentVocab]);
+      }
+    } catch (error) {
+      console.error('[Kalaama] Failed to update word:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update word mastery level (Supabase)
+   */
+  async updateMastery(wordId: string, masteryLevel: number): Promise<void> {
+    try {
+      const { error } = await this.supabase
+        .from('vocabulary')
+        .update({
+          mastery_level: masteryLevel,
+          review_count: (this.vocabularySubject.value.find(v => v.id === wordId)?.review_count || 0) + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', wordId);
+
+      if (error) throw error;
+
+      // Reload vocabulary
+      await this.loadVocabulary();
+    } catch (error) {
+      console.error('[Kalaama] Failed to update mastery:', error);
+    }
+  }
+
+  /**
+   * Update word with AI examples (Supabase)
    */
   async updateAIExamples(wordId: string, aiExamples: string[]): Promise<void> {
-    const { vocabulary = [] } = await chrome.storage.local.get('vocabulary');
+    try {
+      const { error } = await this.supabase
+        .from('vocabulary')
+        .update({
+          aiExamples,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', wordId);
 
-    const index = vocabulary.findIndex((v: VocabularyItem) => v.id === wordId);
+      if (error) throw error;
 
-    if (index >= 0) {
-      vocabulary[index].aiExamples = aiExamples;
-      vocabulary[index].updated_at = new Date().toISOString();
-
-      await chrome.storage.local.set({ vocabulary });
-
-      // Update local state
-      this.vocabularySubject.next([...vocabulary]);
-
-      console.log('[Kalaama] AI examples saved for word:', vocabulary[index].word);
+      // Reload vocabulary
+      await this.loadVocabulary();
+    } catch (error) {
+      console.error('[Kalaama] Failed to save AI examples:', error);
     }
   }
 

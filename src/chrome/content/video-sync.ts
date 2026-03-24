@@ -15,10 +15,19 @@ export class VideoSyncService {
   private intervalId: number | null = null;
   private callbacks: CueChangeCallback[] = [];
   private readonly SYNC_INTERVAL_MS = 50; // Sync every 50ms for better responsiveness
+  private lastVideoSrc: string = '';
+  private isAdPlaying = false;
 
   constructor(video: HTMLVideoElement, subtitles: ParsedSubtitle[]) {
     this.video = video;
     this.subtitles = subtitles;
+
+    // Log diagnostic info
+    if (subtitles.length > 0) {
+      const first = subtitles[0];
+      const last = subtitles[subtitles.length - 1];
+    }
+
     this.setupListeners();
     this.startSync();
   }
@@ -110,6 +119,29 @@ export class VideoSyncService {
   }
 
   private sync(): void {
+    // Check if video element is still valid and playing the right content
+    if (!this.video || !this.video.isConnected) {
+      console.warn('[Kalaama] Video element disconnected, stopping sync');
+      this.stopSync();
+      return;
+    }
+
+    // Detect if ad is playing by checking video source or ad indicators
+    const currentSrc = this.video.src || this.video.currentSrc || '';
+    const adPlaying = this.isAdCurrentlyPlaying();
+
+    if (adPlaying && !this.isAdPlaying) {
+      this.isAdPlaying = true;
+      return;
+    } else if (!adPlaying && this.isAdPlaying) {
+      this.isAdPlaying = false;
+      this.currentCueIndex = -1; // Reset to force re-sync
+    }
+
+    if (this.isAdPlaying) {
+      return; // Don't sync during ads
+    }
+
     const currentTime = this.video.currentTime;
     const cueIndex = this.findCueAt(currentTime);
 
@@ -118,6 +150,15 @@ export class VideoSyncService {
       const cue = cueIndex >= 0 ? this.subtitles[cueIndex] : null;
       this.emitCueChange(cue);
     }
+  }
+
+  private isAdCurrentlyPlaying(): boolean {
+    // Check YouTube-specific ad indicators
+    const adOverlay = document.querySelector('.ytp-ad-player-overlay, .ytp-ad-text, .ad-showing, .ytp-ad-skip-button');
+    const adModule = document.querySelector('.ytp-ad-module');
+    const videoAdUi = document.querySelector('.video-ads');
+
+    return !!(adOverlay || (adModule && adModule.children.length > 0) || (videoAdUi && videoAdUi.children.length > 0));
   }
 
   /**

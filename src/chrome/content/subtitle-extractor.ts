@@ -34,7 +34,6 @@ async function ensureInjectorReady(): Promise<void> {
   try {
     await injectCaptionScript();
     injectorReady = true;
-    console.log('[Kalaama] Caption injector ready');
   } catch (error) {
     console.warn('[Kalaama] Failed to inject caption script:', error);
   }
@@ -48,7 +47,6 @@ export async function extractCaptions(videoId: string): Promise<CaptionTrack[]> 
       try {
         const response = await sendToInjectedScript<InjectedCaptionResponse>('GET_CAPTION_TRACKS');
         if (response.tracks && response.tracks.length > 0) {
-          console.log('[Kalaama] Got tracks from injected script:', response.tracks.length);
           return response.tracks;
         }
       } catch (error) {
@@ -144,20 +142,17 @@ function extractTracksFromResponse(playerResponse: unknown): CaptionTrack[] {
 }
 
 export async function fetchCaptionContent(baseUrl: string): Promise<string> {
-  console.log('[Kalaama] Fetching caption content for:', baseUrl.substring(0, 80));
 
   await ensureInjectorReady();
 
   if (injectorReady) {
     try {
-      console.log('[Kalaama] Method 1: Trying injected script fetch...');
       const response = await sendToInjectedScript<InjectedCaptionResponse>('FETCH_CAPTIONS', {
         baseUrl,
         format: 'json3'
       });
 
       if (response.content && response.content.length > 0) {
-        console.log('[Kalaama] Got captions from injected script, format:', response.format, 'length:', response.content.length);
         if (response.format === 'xml') {
           return JSON.stringify({ xml: response.content });
         }
@@ -169,14 +164,12 @@ export async function fetchCaptionContent(baseUrl: string): Promise<string> {
   }
 
   try {
-    console.log('[Kalaama] Method 2: Trying service worker fetch...');
     const response = await chrome.runtime.sendMessage({
       type: 'FETCH_CAPTIONS',
       payload: { baseUrl }
     });
 
     if (!response.error && response.content && response.content.length > 0) {
-      console.log('[Kalaama] Got captions from service worker, format:', response.format);
       if (response.format === 'xml') {
         return JSON.stringify({ xml: response.content });
       }
@@ -186,7 +179,6 @@ export async function fetchCaptionContent(baseUrl: string): Promise<string> {
     console.warn('[Kalaama] Service worker fetch failed:', error);
   }
 
-  console.log('[Kalaama] Method 3: Trying direct fetch with credentials...');
   return fetchCaptionContentDirect(baseUrl);
 }
 

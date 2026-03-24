@@ -20,6 +20,9 @@ export interface UserSettings {
   theme: 'light' | 'dark' | 'auto';
   ai_examples_count: number; // Number of AI examples to generate (10-20)
   repeat_count: number; // Number of times to repeat each caption (1-10)
+  // Review settings for spaced repetition
+  review_daily_goal?: number; // Default: 20 words per day
+  review_modes?: ('flashcard' | 'typing')[]; // Default: ['flashcard', 'typing']
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -34,6 +37,8 @@ const DEFAULT_SETTINGS: UserSettings = {
   theme: 'auto',
   ai_examples_count: 15, // Default to 15 examples
   repeat_count: 1, // Default to 1 (no repeat)
+  review_daily_goal: 20, // Default to 20 words per day
+  review_modes: ['flashcard', 'typing'], // Default to both modes
 };
 
 @Injectable({
@@ -132,7 +137,6 @@ export class SettingsService {
       // }
       // =============================================================================
 
-      console.log('[Kalaama] Settings loaded:', this.settingsSubject.value);
     } finally {
       // Mark as ready even if there was an error (we have defaults)
       this.settingsReadySubject.next(true);
@@ -164,7 +168,6 @@ export class SettingsService {
       console.debug('[Kalaama] Could not broadcast settings:', error);
     }
 
-    console.log('[Kalaama] Settings saved to local storage');
 
     // =============================================================================
     // SUPABASE DISABLED - Uncomment when ready
@@ -213,6 +216,5 @@ export class SettingsService {
   async resetSettings(): Promise<void> {
     this.settingsSubject.next(DEFAULT_SETTINGS);
     await this.saveLocalSettings(DEFAULT_SETTINGS);
-    console.log('[Kalaama] Settings reset to defaults');
   }
 }

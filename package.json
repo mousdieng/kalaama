@@ -12,10 +12,11 @@
     "build:chrome": "npm run build:content && npm run build:reading && npm run build:background",
     "build:content": "esbuild src/chrome/content/content-script.ts --bundle --outfile=dist/content/content-script.js --format=iife --target=chrome100",
     "build:reading": "esbuild src/chrome/content/reading-content-script.ts --bundle --outfile=dist/content/reading-content-script.js --format=iife --target=chrome100",
-    "build:background": "esbuild src/chrome/background/service-worker.ts --bundle --outfile=dist/background/service-worker.js --format=esm --target=chrome100",
+    "build:background": "node scripts/build-service-worker.cjs",
     "watch:content": "esbuild src/chrome/content/content-script.ts --bundle --outfile=dist/content/content-script.js --format=iife --target=chrome100 --watch",
     "watch:background": "esbuild src/chrome/background/service-worker.ts --bundle --outfile=dist/background/service-worker.js --format=esm --target=chrome100 --watch",
     "copy:assets": "node scripts/copy-assets.cjs",
+    "import:vocabulary": "node scripts/import-vocabulary.cjs",
     "test": "ng test"
   },
   "keywords": [

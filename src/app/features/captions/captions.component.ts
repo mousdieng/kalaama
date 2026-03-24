@@ -148,7 +148,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
 
     // Subscribe to settings changes for reactive updates
     this.settingsSubscription = this.settingsService.settings$.subscribe((settings) => {
-      console.log('[Captions] Settings updated:', settings);
       this.settings = { ...this.settings, ...settings };
     });
 
@@ -198,7 +197,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
         this.settings = { ...this.settings, ...loadedSettings };
         // Initialize repeat count from settings
         this.repeatCount = this.settings.repeat_count || 1;
-        console.log('[Captions] Settings loaded:', this.settings);
       }
     } catch (error) {
       console.warn('[Captions] Failed to load settings:', error);
@@ -271,9 +269,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   }
 
   private handleAllCaptions(payload: { captions: SubtitleCue[]; translatedCaptions: SubtitleCue[] }) {
-    console.log('[Captions] ==== RECEIVED ALL_CAPTIONS ====');
-    console.log('[Captions] Captions count:', payload.captions?.length || 0);
-    console.log('[Captions] Translated count:', payload.translatedCaptions?.length || 0);
 
     this.allCaptions = payload.captions || [];
     this.translatedCaptions = payload.translatedCaptions || [];
@@ -376,6 +371,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     translationLanguage?: string | null;
     language?: string;
     availableLanguages?: string[];
+    message?: string;
   }) {
     this.isConnected = status.connected;
     this.hasCaptions = status.hasCaptions;
@@ -403,7 +399,12 @@ export class CaptionsComponent implements OnInit, OnDestroy {
           this.statusText = 'Captions ready (no translations available)';
         }
       } else {
-        this.statusText = 'No captions available';
+        // Check if it's because of auto-generated captions
+        if (status.message) {
+          this.statusText = status.message;
+        } else {
+          this.statusText = 'No captions available';
+        }
       }
     }
   }
@@ -432,13 +433,9 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       return;
     }
 
-    console.log('[Captions] ========== BUILDING TRANSLATION CACHE ==========');
-    console.log('[Captions] Source captions:', this.allCaptions.length);
-    console.log('[Captions] Translated captions:', this.translatedCaptions.length);
 
     // Strategy 1: If same count, use direct 1:1 index mapping
     if (this.allCaptions.length === this.translatedCaptions.length) {
-      console.log('[Captions] Using 1:1 index mapping');
       for (let i = 0; i < this.allCaptions.length; i++) {
         this.translationCache.set(i, this.translatedCaptions[i].text);
       }
@@ -456,7 +453,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       }
     }
 
-    console.log('[Captions] Translation cache built:', this.translationCache.size, 'entries');
     this.logFullMapping();
   }
 
@@ -594,29 +590,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       });
     }
 
-    console.log('[Captions] ========== FULL MAPPING ==========');
-    console.table(mapping);
-
-    // Also log as copyable JSON
-    console.log('[Captions] JSON mapping (copy this):');
-    console.log(JSON.stringify(mapping.map(m => ({ subtitle: m.subtitle, translation: m.translation })), null, 2));
-
-    // Log raw timing data for analysis
-    console.log('[Captions] ========== RAW SOURCE CAPTIONS ==========');
-    console.table(this.allCaptions.slice(0, 50).map((c, i) => ({
-      idx: i,
-      start: c.startTime.toFixed(2),
-      end: c.endTime.toFixed(2),
-      text: c.text.substring(0, 60)
-    })));
-
-    console.log('[Captions] ========== RAW TRANSLATED CAPTIONS ==========');
-    console.table(this.translatedCaptions.slice(0, 50).map((c, i) => ({
-      idx: i,
-      start: c.startTime.toFixed(2),
-      end: c.endTime.toFixed(2),
-      text: c.text.substring(0, 60)
-    })));
   }
 
   // Extract a portion of text for a specific position among multiple captions
@@ -730,14 +703,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       await this.settingsPromise;
     }
 
-    // Pause video when clicking on a word
-    try {
-      await this.messagingService.pauseVideo();
-      this.videoPausedByUs = true;
-    } catch (error) {
-      console.warn('[Captions] Could not pause video:', error);
-    }
-
+    // Show modal immediately (don't wait for pause)
     this.selectedWord = cleanWord;
     this.translation = null;
     this.translationError = null;
@@ -746,6 +712,14 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     this.isTranslating = true;
     this.isLoadingContext = true;
     this.isLoadingAIExamples = true;
+    this.cdr.markForCheck();
+
+    // Pause video in background (don't block modal appearance)
+    this.messagingService.pauseVideo().then(() => {
+      this.videoPausedByUs = true;
+    }).catch((error) => {
+      console.warn('[Captions] Could not pause video:', error);
+    });
 
     // Try to get AI context first (includes translation)
     try {
@@ -755,7 +729,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
         this.settings.target_language,
         this.settings.native_language
       );
-      console.log('[Captions] Received word context:', context);
       this.wordContext = context;
       this.translation = context.translation;
       this.isLoadingContext = false;
@@ -804,7 +777,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       // If we have AI examples loaded, save them too
       if (savedWord && this.aiExamples.length > 0) {
         await this.vocabularyService.updateAIExamples(savedWord.id, this.aiExamples);
-        console.log('[Captions] Saved word with AI examples:', this.aiExamples.length);
       }
 
       this.showSavedToast = true;
@@ -840,7 +812,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       );
 
       if (existingWord?.aiExamples && existingWord.aiExamples.length > 0) {
-        console.log(`[Captions] Using stored AI examples for "${word}":`, existingWord.aiExamples.length);
         this.aiExamples = existingWord.aiExamples;
         this.isLoadingAIExamples = false;
         return;
@@ -848,7 +819,6 @@ export class CaptionsComponent implements OnInit, OnDestroy {
 
       // No stored examples, fetch new ones
       const examplesCount = this.settings.ai_examples_count || 15;
-      console.log(`[Captions] Fetching ${examplesCount} new AI examples for "${word}"...`);
 
       const response = await this.messagingService.getWordExamples(
         word,
@@ -857,13 +827,11 @@ export class CaptionsComponent implements OnInit, OnDestroy {
         examplesCount
       );
 
-      console.log('[Captions] AI examples received:', response.examples.length);
       this.aiExamples = response.examples;
 
       // If word exists in vocabulary, update it with the new examples
       if (existingWord) {
         await this.vocabularyService.updateAIExamples(existingWord.id, response.examples);
-        console.log('[Captions] Updated existing vocabulary word with AI examples');
       }
     } catch (error: any) {
       console.error('[Captions] Failed to fetch AI examples:', error);

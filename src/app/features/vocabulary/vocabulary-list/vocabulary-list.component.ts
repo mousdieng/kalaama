@@ -1,10 +1,12 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { VocabularyService, VocabularyItem } from '../../../core/services/vocabulary.service';
 import { LoadingComponent } from '../../../shared/components/loading/loading.component';
 import { MessagingService } from '../../../core/services/messaging.service';
 import { SettingsService } from '../../../core/services/settings.service';
+import { ReviewService, ReviewStats } from '../../../core/services/review.service';
 
 @Component({
   selector: 'app-vocabulary-list',
@@ -41,30 +43,51 @@ import { SettingsService } from '../../../core/services/settings.service';
         </select>
       </div>
 
-      <!-- Stats -->
-      <div class="flex gap-4 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center">
-            <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-            </svg>
+      <!-- Stats and Review Button -->
+      <div class="space-y-3">
+        <div class="flex gap-4 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center">
+              <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+              </svg>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">Total Words</div>
+              <div class="text-lg font-bold text-slate-900 dark:text-white">{{ filteredVocabulary.length }}</div>
+            </div>
           </div>
-          <div>
-            <div class="text-xs text-slate-500 dark:text-slate-400">Total Words</div>
-            <div class="text-lg font-bold text-slate-900 dark:text-white">{{ filteredVocabulary.length }}</div>
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
+              <svg class="w-4 h-4 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">Mastered</div>
+              <div class="text-lg font-bold text-green-600 dark:text-green-400">{{ masteredCount }}</div>
+            </div>
           </div>
         </div>
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/50 flex items-center justify-center">
-            <svg class="w-4 h-4 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+
+        <!-- Review Stats and Button -->
+        <button
+          (click)="startReview()"
+          class="w-full flex items-center justify-between p-4 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white rounded-lg font-semibold transition-all transform hover:scale-105 active:scale-95"
+          [disabled]="dueCount === 0"
+        >
+          <div class="flex items-center gap-3">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l-4 4m0 0l-4-4m4 4V3m0 0h.01M12 15a6 6 0 100-12 6 6 0 000 12z"/>
             </svg>
+            <span>Start Review</span>
           </div>
-          <div>
-            <div class="text-xs text-slate-500 dark:text-slate-400">Mastered</div>
-            <div class="text-lg font-bold text-green-600 dark:text-green-400">{{ masteredCount }}</div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-bold bg-white/20 px-2 py-1 rounded-full">
+              {{ dueCount }} due
+            </span>
           </div>
-        </div>
+        </button>
       </div>
 
       <!-- Vocabulary List -->
@@ -304,6 +327,8 @@ export class VocabularyListComponent implements OnInit {
   private vocabularyService = inject(VocabularyService);
   private messagingService = inject(MessagingService);
   private settingsService = inject(SettingsService);
+  private reviewService = inject(ReviewService);
+  private router = inject(Router);
 
   loading = true;
   vocabulary: VocabularyItem[] = [];
@@ -317,12 +342,17 @@ export class VocabularyListComponent implements OnInit {
   isLoadingExamples = false;
   examplesError: string | null = null;
 
+  // Review stats
+  reviewStats: ReviewStats | null = null;
+  dueCount = 0;
+
   get masteredCount(): number {
     return this.filteredVocabulary.filter((v) => v.mastery_level >= 5).length;
   }
 
   async ngOnInit(): Promise<void> {
     await this.loadVocabulary();
+    await this.loadReviewStats();
   }
 
   async loadVocabulary(): Promise<void> {
@@ -436,5 +466,30 @@ export class VocabularyListComponent implements OnInit {
     if (!this.selectedWord) return;
     console.log('[Vocabulary] Regenerating examples...');
     await this.fetchAIExamples(this.selectedWord, true);
+  }
+
+  /**
+   * Load review statistics
+   */
+  private async loadReviewStats(): Promise<void> {
+    try {
+      const settings = await this.settingsService.getSettings();
+      const language = settings.target_language || 'es';
+      this.reviewStats = await this.reviewService.getReviewStats(language);
+      this.dueCount = this.reviewStats.dueCount;
+    } catch (error) {
+      console.warn('[Vocabulary] Failed to load review stats:', error);
+    }
+  }
+
+  /**
+   * Start a review session
+   */
+  async startReview(): Promise<void> {
+    if (this.dueCount === 0) {
+      alert('No words due for review today!');
+      return;
+    }
+    this.router.navigate(['/review']);
   }
 }

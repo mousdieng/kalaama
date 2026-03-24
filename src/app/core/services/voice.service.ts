@@ -207,7 +207,6 @@ export class VoiceService {
           }
         }
 
-        console.log('[VoiceService] Interim:', interimTranscript, 'Final:', finalTranscript);
       };
 
       // Handle errors
@@ -229,7 +228,6 @@ export class VoiceService {
 
       // Handle end
       this.recognition.onend = () => {
-        console.log('[VoiceService] Recognition ended, transcript:', finalTranscript);
         this.isListeningInternal = false;
         clearTimeout(timeoutId);
 
@@ -242,14 +240,12 @@ export class VoiceService {
 
       // Handle start
       this.recognition.onstart = () => {
-        console.log('[VoiceService] Recognition started');
         this.isListeningInternal = true;
       };
 
       // Set timeout to auto-stop after 10 seconds
       timeoutId = setTimeout(() => {
         if (this.isListeningInternal) {
-          console.log('[VoiceService] Timeout, stopping');
           this.stopListening();
         }
       }, 10000);
@@ -316,7 +312,6 @@ export class VoiceService {
     } catch (err: any) {
       // Don't log dismissed prompts as errors - they're expected user behavior
       if (err?.message?.includes('dismissed')) {
-        console.log('[VoiceService] Permission prompt dismissed by user');
       } else {
         console.warn('[VoiceService] Permission not granted:', err?.message || err);
       }

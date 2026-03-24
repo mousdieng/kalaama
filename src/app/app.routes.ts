@@ -58,6 +58,13 @@ export const routes: Routes = [
       ),
   },
   {
+    path: 'review',
+    loadComponent: () =>
+      import('./features/review/review.component').then(
+        (m) => m.ReviewComponent
+      ),
+  },
+  {
     path: '**',
     redirectTo: '',
   },
