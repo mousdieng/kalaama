@@ -2,7 +2,7 @@ import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
-import { VocabularyService, VocabularyItem } from '../../../core/services/vocabulary.service';
+import { VocabularyService, VocabularyItem, VocabularyItemWithDictionary } from '../../../core/services/vocabulary.service';
 import { LoadingComponent } from '../../../shared/components/loading/loading.component';
 import { MessagingService } from '../../../core/services/messaging.service';
 import { SettingsService } from '../../../core/services/settings.service';
@@ -331,9 +331,9 @@ export class VocabularyListComponent implements OnInit {
   private router = inject(Router);
 
   loading = true;
-  vocabulary: VocabularyItem[] = [];
-  filteredVocabulary: VocabularyItem[] = [];
-  selectedWord: VocabularyItem | null = null;
+  vocabulary: VocabularyItemWithDictionary[] = [];
+  filteredVocabulary: VocabularyItemWithDictionary[] = [];
+  selectedWord: VocabularyItemWithDictionary | null = null;
   searchQuery = '';
   filterLanguage = '';
 
@@ -378,14 +378,14 @@ export class VocabularyListComponent implements OnInit {
     );
   }
 
-  async deleteWord(event: Event, word: VocabularyItem): Promise<void> {
+  async deleteWord(event: Event, word: VocabularyItemWithDictionary): Promise<void> {
     event.stopPropagation();
     if (confirm(`Delete "${word.word}"?`)) {
       await this.vocabularyService.deleteWord(word.id);
     }
   }
 
-  async updateMastery(word: VocabularyItem, level: number): Promise<void> {
+  async updateMastery(word: VocabularyItemWithDictionary, level: number): Promise<void> {
     await this.vocabularyService.updateMastery(word.id, level);
     word.mastery_level = level;
   }
@@ -395,7 +395,7 @@ export class VocabularyListComponent implements OnInit {
     return text.substring(0, maxLength).trim() + '...';
   }
 
-  async selectWord(word: VocabularyItem): Promise<void> {
+  async selectWord(word: VocabularyItemWithDictionary): Promise<void> {
     this.selectedWord = word;
     this.examplesError = null;
 
@@ -418,7 +418,7 @@ export class VocabularyListComponent implements OnInit {
     await this.fetchAIExamples(word);
   }
 
-  async fetchAIExamples(word: VocabularyItem, force: boolean = false): Promise<void> {
+  async fetchAIExamples(word: VocabularyItemWithDictionary, force: boolean = false): Promise<void> {
     this.aiExamples = [];
     this.isLoadingExamples = true;
     this.examplesError = null;

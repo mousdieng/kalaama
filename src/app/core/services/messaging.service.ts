@@ -43,6 +43,8 @@ export interface WordContextResponse {
   examples: string[];
   pronunciation?: string;
   translation: string;
+  context?: string;
+  confidence?: number;
 }
 
 // AI Tutor types

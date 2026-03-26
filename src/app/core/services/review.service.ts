@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { VocabularyService, type VocabularyItem } from './vocabulary.service';
+import { VocabularyService, type VocabularyItem, type VocabularyItemWithDictionary } from './vocabulary.service';
 import { SupabaseService } from './supabase.service';
 
 /**
@@ -61,7 +61,7 @@ export class ReviewService {
    * @param language Language code (e.g., 'es', 'fr')
    * @param limit Maximum number of words to return (default: 20)
    */
-  async getDueWords(language: string, limit: number = 20): Promise<VocabularyItem[]> {
+  async getDueWords(language: string, limit: number = 20): Promise<VocabularyItemWithDictionary[]> {
     try {
       // This will be implemented with direct Supabase query
       // For now, we'll get all vocabulary and filter locally
@@ -176,7 +176,7 @@ export class ReviewService {
    * This updates the vocabulary item with SM-2 results
    */
   async submitReview(
-    word: VocabularyItem,
+    word: VocabularyItemWithDictionary,
     quality: number,
     reviewType: 'flashcard' | 'typing'
   ): Promise<void> {
@@ -314,7 +314,7 @@ export class ReviewService {
   /**
    * Get next due word for review (returns oldest due word)
    */
-  async getNextDueWord(language: string): Promise<VocabularyItem | null> {
+  async getNextDueWord(language: string): Promise<VocabularyItemWithDictionary | null> {
     const dueWords = await this.getDueWords(language, 1);
     return dueWords.length > 0 ? dueWords[0] : null;
   }
@@ -322,7 +322,7 @@ export class ReviewService {
   /**
    * Check if a word is due for review
    */
-  isWordDue(word: VocabularyItem): boolean {
+  isWordDue(word: VocabularyItemWithDictionary): boolean {
     if (!word.next_review_date) {
       return true; // New words are always due
     }

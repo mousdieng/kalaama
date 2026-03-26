@@ -12,7 +12,13 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd comprehensive features for enhanced learning experience\n\nContent Script:\n- Implement ALL_CAPTIONS and CUE_INDEX_CHANGE message types\n- Add fuzzy subtitle matching with multiple strategies \\(exact, index-based, fuzzy\\)\n- Support video control messages \\(pause, play, seek\\)\n- Improve translated caption matching with tolerance\n\nService Worker:\n- Add AI word context via Google Gemini API integration\n- Implement video control message forwarding to content script\n- Add GET_WORD_CONTEXT handler with fallback to basic translation\n- Add auto_pause_after_caption to default settings\n- Store and retrieve Gemini API key from chrome.storage\n\nMessaging Service:\n- Add getWordContext\\(\\) for AI-powered word definitions\n- Add pauseVideo\\(\\), playVideo\\(\\), seekToTime\\(\\) methods\n- Add WordContextResponse interface with pronunciation, examples, part of speech\n\nSettings Service:\n- Refactor to use async initialization pattern\n- Add waitForReady\\(\\) method for proper async loading\n- Add isReady\\(\\) and getLanguageNames\\(\\) utilities\n- Improve error handling and logging\n\nSettings Component:\n- Add Gemini API key configuration field\n- Improve language names display\n- Better form handling and validation\n\nHeader Component:\n- Simplify by removing embedded settings form\n- Clean up component structure\n\nMessages Types:\n- Add VIDEO_CONTROL, SEEK_TO_CUE, GET_WORD_CONTEXT types\n- Add ALL_CAPTIONS, CUE_INDEX_CHANGE for lyrics display\n- Add comprehensive payload types for all message types\n\nVideo Sync:\n- Update onCueChange to include cueIndex parameter\n- Support for cue index tracking\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit:*)",
       "Bash(cd:*)",
-      "Bash(npm run build:reading:*)"
+      "Bash(npm run build:reading:*)",
+      "Bash(git push:*)",
+      "mcp__chrome-devtools__select_page",
+      "mcp__supabase__list_projects",
+      "mcp__supabase__list_tables",
+      "mcp__supabase__execute_sql",
+      "mcp__supabase__apply_migration"
     ]
   }
 }

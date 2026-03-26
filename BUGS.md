@@ -1,0 +1,2 @@
+- In generated-substion the displaying substitle is not sync with the video.
+- The video controll like auto-pause after each sequence, is not working.

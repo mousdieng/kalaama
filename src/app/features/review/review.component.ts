@@ -3,13 +3,13 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ReviewService } from '../../core/services/review.service';
-import { VocabularyService, type VocabularyItem } from '../../core/services/vocabulary.service';
+import { VocabularyService, type VocabularyItem, type VocabularyItemWithDictionary } from '../../core/services/vocabulary.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 
 interface ReviewCard {
-  word: VocabularyItem;
+  word: VocabularyItemWithDictionary;
   mode: 'flashcard' | 'typing';
   showAnswer: boolean;
   typedAnswer: string;
@@ -35,7 +35,7 @@ export class ReviewComponent implements OnInit, OnDestroy {
   private destroy$ = new Subject<void>();
 
   // Session data
-  dueWords: VocabularyItem[] = [];
+  dueWords: VocabularyItemWithDictionary[] = [];
   currentIndex = 0;
   sessionStartTime = new Date();
   sessionsReviewedCount = 0;
@@ -55,7 +55,7 @@ export class ReviewComponent implements OnInit, OnDestroy {
   // Current card state
   currentCard: ReviewCard | null = null;
 
-  get currentWord(): VocabularyItem | null {
+  get currentWord(): VocabularyItemWithDictionary | null {
     return this.currentCard?.word || null;
   }
 

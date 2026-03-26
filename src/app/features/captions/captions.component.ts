@@ -5,6 +5,8 @@ import { Subscription } from 'rxjs';
 import { MessagingService, WordContextResponse } from '../../core/services/messaging.service';
 import { SettingsService, UserSettings } from '../../core/services/settings.service';
 import { VocabularyService } from '../../core/services/vocabulary.service';
+import { DictionaryService } from '../../core/services/dictionary.service';
+import { DictionaryWord } from '../../../chrome/shared/types/dictionary';
 
 interface SubtitleCue {
   text: string;
@@ -47,6 +49,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   private messagingService = inject(MessagingService);
   private settingsService = inject(SettingsService);
   private vocabularyService = inject(VocabularyService);
+  private dictionaryService = inject(DictionaryService);
   private ngZone = inject(NgZone);
   private cdr = inject(ChangeDetectorRef);
 
@@ -81,6 +84,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
   isTranslating = false;
   isSaving = false;
   showSavedToast = false;
+  currentDictionaryEntry: DictionaryWord | null = null;
 
   // AI word context
   wordContext: WordContextResponse | null = null;
@@ -709,9 +713,10 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     this.translationError = null;
     this.wordContext = null;
     this.aiExamples = [];
+    this.currentDictionaryEntry = null;
     this.isTranslating = true;
-    this.isLoadingContext = true;
-    this.isLoadingAIExamples = true;
+    this.isLoadingContext = false;
+    this.isLoadingAIExamples = false;
     this.cdr.markForCheck();
 
     // Pause video in background (don't block modal appearance)
@@ -721,38 +726,78 @@ export class CaptionsComponent implements OnInit, OnDestroy {
       console.warn('[Captions] Could not pause video:', error);
     });
 
-    // Try to get AI context first (includes translation)
+    // 1. First, search the dictionary
     try {
-      const context = await this.messagingService.getWordContext(
+      const dictionaryEntry = await this.dictionaryService.searchWord(
         cleanWord,
-        this.currentCue?.text || '',
+        this.settings.target_language
+      );
+
+      if (dictionaryEntry) {
+        // Found in dictionary - use rich dictionary data
+        this.currentDictionaryEntry = dictionaryEntry;
+        this.translation = dictionaryEntry.french_translation;
+
+        // Map dictionary data to wordContext format for display
+        this.wordContext = {
+          translation: dictionaryEntry.french_translation,
+          definition: dictionaryEntry.french_definition,
+          partOfSpeech: dictionaryEntry.part_of_speech,
+          examples: dictionaryEntry.examples.map(ex => ex.german),
+          pronunciation: dictionaryEntry.pronunciation_ipa || '',
+          context: dictionaryEntry.french_explanation || '',
+          confidence: 1.0
+        };
+
+        // Use dictionary examples (no need for AI examples)
+        this.aiExamples = [];
+        this.isTranslating = false;
+        this.cdr.markForCheck();
+        return;
+      }
+    } catch (error) {
+      console.warn('[Captions] Dictionary search failed:', error);
+    }
+
+    // 2. Word not in dictionary - log as missing
+    try {
+      await this.dictionaryService.logMissingWord(cleanWord, {
+        video_id: this.videoInfo.videoId || undefined,
+        video_title: this.videoInfo.title || undefined,
+        context_sentence: this.currentCue?.text || ''
+      });
+    } catch (error) {
+      console.warn('[Captions] Failed to log missing word:', error);
+    }
+
+    // 3. Fall back to free translation API only (no AI)
+    try {
+      const result = await this.messagingService.translateWord(
+        cleanWord,
         this.settings.target_language,
         this.settings.native_language
       );
-      this.wordContext = context;
-      this.translation = context.translation;
-      this.isLoadingContext = false;
-    } catch (error: any) {
-      console.warn('[Captions] AI context failed, using basic translation:', error);
-      this.isLoadingContext = false;
-      // Fall back to basic translation
-      try {
-        const result = await this.messagingService.translateWord(
-          cleanWord,
-          this.settings.target_language,
-          this.settings.native_language
-        );
-        this.translation = result.translation;
-      } catch (translateError: any) {
-        this.translationError = translateError.message || 'Translation failed';
-      }
+      this.translation = result.translation;
+
+      // Basic word context from translation result
+      this.wordContext = {
+        translation: result.translation,
+        definition: '',
+        partOfSpeech: '',
+        examples: [],
+        pronunciation: '',
+        context: '',
+        confidence: 0.7
+      };
+    } catch (translateError: any) {
+      console.warn('[Captions] Translation failed:', translateError);
+      this.translationError = translateError.message || 'Translation failed';
     } finally {
       this.isTranslating = false;
       this.cdr.markForCheck();
     }
 
-    // Fetch AI examples (10-20 examples) in parallel
-    this.fetchAIExamples(cleanWord);
+    // No AI examples for words not in dictionary
   }
 
   async saveWord() {
@@ -762,22 +807,20 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     try {
       const savedWord = await this.vocabularyService.addWord({
         word: this.selectedWord,
-        translation: this.translation,
+        dictionary_id: this.currentDictionaryEntry?.id, // Link to dictionary if found
         language: this.settings.target_language,
         context_sentence: this.currentCue?.text || '',
         video_id: this.videoInfo.videoId || undefined,
         video_title: this.videoInfo.title || undefined,
-        // Save full AI context if available
-        definition: this.wordContext?.definition || '',
-        part_of_speech: this.wordContext?.partOfSpeech || '',
-        examples: this.wordContext?.examples || [],
-        pronunciation: this.wordContext?.pronunciation || ''
+        // Legacy fields (only saved if not in dictionary)
+        translation: this.currentDictionaryEntry ? undefined : this.translation,
+        definition: this.currentDictionaryEntry ? undefined : (this.wordContext?.definition || ''),
+        part_of_speech: this.currentDictionaryEntry ? undefined : (this.wordContext?.partOfSpeech || ''),
+        examples: this.currentDictionaryEntry ? undefined : (this.wordContext?.examples || []),
+        pronunciation: this.currentDictionaryEntry ? undefined : (this.wordContext?.pronunciation || '')
       });
 
-      // If we have AI examples loaded, save them too
-      if (savedWord && this.aiExamples.length > 0) {
-        await this.vocabularyService.updateAIExamples(savedWord.id, this.aiExamples);
-      }
+      // No AI examples - dictionary words already have examples
 
       this.showSavedToast = true;
       setTimeout(() => this.showSavedToast = false, 2000);
@@ -801,6 +844,7 @@ export class CaptionsComponent implements OnInit, OnDestroy {
     this.translationError = null;
     this.wordContext = null;
     this.aiExamples = [];
+    this.currentDictionaryEntry = null;
   }
 
   async fetchAIExamples(word: string): Promise<void> {

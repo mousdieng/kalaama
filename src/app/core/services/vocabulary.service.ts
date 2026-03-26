@@ -2,32 +2,62 @@ import { Injectable, inject } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { SupabaseService } from './supabase.service';
+import { DictionaryService } from './dictionary.service';
+import { DictionaryWord, DictionaryExample, Collocation } from '../../../chrome/shared/types/dictionary';
 
+// Updated interface - supports both legacy and dictionary-linked words
 export interface VocabularyItem {
   id: string;
-  word: string;
-  translation: string;
+  dictionary_id?: string;      // NEW: Foreign key to dictionary (null for legacy words)
+
+  // Legacy fields (kept for backward compatibility until migration)
+  word?: string;               // Will be removed after migration
+  translation?: string;        // Will be removed after migration
+  definition?: string;         // Will be removed after migration
+  part_of_speech?: string;     // Will be removed after migration
+  examples?: string[];         // Will be removed after migration
+  pronunciation?: string;      // Will be removed after migration
+  aiExamples?: string[];       // Will be removed after migration
+
+  // User-specific fields (kept)
   language: string;
   context_sentence?: string;
   video_id?: string;
   video_title?: string;
+  notes?: string;              // NEW: User's personal notes
+  custom_examples?: string[];  // NEW: User's personal examples
+
+  // Learning progress (kept)
   mastery_level: number;
   review_count: number;
   created_at: string;
   updated_at?: string;
-  // Full AI context from Gemini
-  definition?: string;
-  part_of_speech?: string;
-  examples?: string[]; // Initial examples (2-3 from word context)
-  pronunciation?: string;
-  // AI-generated detailed examples (10-20 examples)
-  aiExamples?: string[];
-  // SM-2 Spaced Repetition Fields
+
+  // SM-2 Spaced Repetition Fields (kept)
   last_reviewed_at?: string;
-  next_review_date?: string;     // ISO timestamp - when this word is due for review
-  ease_factor?: number;          // 1.3 - 2.5 (SM-2 difficulty multiplier)
-  interval?: number;             // Days until next review
-  repetitions?: number;          // Consecutive successful reviews
+  next_review_date?: string;
+  ease_factor?: number;
+  interval?: number;
+  repetitions?: number;
+}
+
+// For displaying vocabulary with dictionary data joined
+// Omit 'examples' from VocabularyItem since we're replacing it with DictionaryExample[]
+export interface VocabularyItemWithDictionary extends Omit<VocabularyItem, 'examples'> {
+  word: string;
+  translation: string;
+  definition: string;
+  part_of_speech: string;
+  examples: DictionaryExample[];
+  pronunciation?: string;
+  synonyms?: string[];
+  antonyms?: string[];
+  collocations?: Collocation[];
+  difficulty_level?: string;
+  article?: string;
+  gender?: string;
+  plural_form?: string;
+  conjugation_hint?: string;
 }
 
 @Injectable({
@@ -35,20 +65,21 @@ export interface VocabularyItem {
 })
 export class VocabularyService {
   private supabase = inject(SupabaseService);
+  private dictionaryService = inject(DictionaryService);
 
-  private vocabularySubject = new BehaviorSubject<VocabularyItem[]>([]);
+  private vocabularySubject = new BehaviorSubject<VocabularyItemWithDictionary[]>([]);
   private loadingSubject = new BehaviorSubject<boolean>(false);
 
   vocabulary$ = this.vocabularySubject.asObservable();
   loading$ = this.loadingSubject.asObservable();
 
   // Getter to access current vocabulary value
-  get currentVocabulary(): VocabularyItem[] {
+  get currentVocabulary(): VocabularyItemWithDictionary[] {
     return this.vocabularySubject.value;
   }
 
   /**
-   * Load vocabulary from Supabase
+   * Load vocabulary from Supabase with dictionary data joined
    */
   async loadVocabulary(language?: string, limit = 50): Promise<void> {
     this.loadingSubject.next(true);
@@ -67,7 +98,12 @@ export class VocabularyService {
 
       if (error) throw error;
 
-      this.vocabularySubject.next((data as VocabularyItem[]) || []);
+      const vocabularyItems = (data as VocabularyItem[]) || [];
+
+      // Join with dictionary data
+      const enrichedItems = await this.joinWithDictionary(vocabularyItems);
+
+      this.vocabularySubject.next(enrichedItems);
     } catch (error) {
       console.error('[Kalaama] Failed to load vocabulary:', error);
     } finally {
@@ -76,10 +112,9 @@ export class VocabularyService {
   }
 
   /**
-   * Get vocabulary for a specific language
-   * Used by ReviewService for filtering words
+   * Get vocabulary for a specific language (used by ReviewService)
    */
-  async getVocabulary(language: string): Promise<VocabularyItem[]> {
+  async getVocabulary(language: string): Promise<VocabularyItemWithDictionary[]> {
     try {
       const { data, error } = await this.supabase
         .from('vocabulary')
@@ -89,7 +124,8 @@ export class VocabularyService {
 
       if (error) throw error;
 
-      return (data as VocabularyItem[]) || [];
+      const vocabularyItems = (data as VocabularyItem[]) || [];
+      return await this.joinWithDictionary(vocabularyItems);
     } catch (error) {
       console.error('[Kalaama] Failed to get vocabulary:', error);
       return [];
@@ -97,50 +133,89 @@ export class VocabularyService {
   }
 
   /**
-   * Add a word to vocabulary (Supabase)
+   * Add a word to vocabulary
+   * Checks dictionary first, then creates user vocabulary entry
    */
-  async addWord(word: Partial<VocabularyItem>): Promise<VocabularyItem | null> {
+  async addWord(input: {
+    word?: string;
+    dictionary_id?: string;
+    language: string;
+    context_sentence?: string;
+    video_id?: string;
+    video_title?: string;
+    notes?: string;
+    // Legacy fields for backward compatibility
+    translation?: string;
+    definition?: string;
+    part_of_speech?: string;
+    examples?: string[];
+    pronunciation?: string;
+  }): Promise<VocabularyItemWithDictionary | null> {
     try {
-      // Check if word already exists
-      const { data: existing } = await this.supabase
-        .from('vocabulary')
-        .select('*')
-        .eq('word', word.word)
-        .eq('language', word.language)
-        .single();
+      let dictionaryId = input.dictionary_id;
+      let dictionaryEntry: DictionaryWord | null = null;
 
-      const wordEntry: VocabularyItem = {
-        id: existing?.id || `word_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        word: word.word || '',
-        translation: word.translation || '',
-        language: word.language || 'es',
-        context_sentence: word.context_sentence,
-        video_id: word.video_id,
-        video_title: word.video_title,
+      // If word is provided but no dictionary_id, search dictionary
+      if (input.word && !dictionaryId) {
+        dictionaryEntry = await this.dictionaryService.searchWord(input.word, input.language);
+        if (dictionaryEntry) {
+          dictionaryId = dictionaryEntry.id;
+        } else {
+          // Word not in dictionary - log as missing
+          await this.dictionaryService.logMissingWord(input.word, {
+            video_id: input.video_id,
+            video_title: input.video_title,
+            context_sentence: input.context_sentence
+          });
+        }
+      }
+
+      // Check if word already exists in user's vocabulary
+      let existingQuery = this.supabase.from('vocabulary').select('*');
+
+      if (dictionaryId) {
+        existingQuery = existingQuery.eq('dictionary_id', dictionaryId);
+      } else if (input.word) {
+        existingQuery = existingQuery.eq('word', input.word).eq('language', input.language);
+      }
+
+      const { data: existing } = await existingQuery.single();
+
+      // Prepare vocabulary entry
+      const vocabularyEntry: Partial<VocabularyItem> = {
+        dictionary_id: dictionaryId,
+        language: input.language,
+        context_sentence: input.context_sentence,
+        video_id: input.video_id,
+        video_title: input.video_title,
+        notes: input.notes,
         mastery_level: existing?.mastery_level || 0,
         review_count: existing?.review_count || 0,
-        created_at: existing?.created_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        definition: word.definition,
-        part_of_speech: word.part_of_speech,
-        examples: word.examples,
-        pronunciation: word.pronunciation,
-        aiExamples: existing?.aiExamples,
+
+        // Legacy fields (for backward compatibility)
+        word: input.word,
+        translation: input.translation,
+        definition: input.definition,
+        part_of_speech: input.part_of_speech,
+        examples: input.examples,
+        pronunciation: input.pronunciation,
       };
 
-      // Upsert word
+      // Upsert vocabulary entry
       const { data, error } = await this.supabase
         .from('vocabulary')
-        .upsert([wordEntry], { onConflict: 'id' })
+        .upsert([vocabularyEntry])
         .select()
         .single();
 
       if (error) throw error;
 
-      // Reload vocabulary
+      // Reload vocabulary to get enriched data
       await this.loadVocabulary();
 
-      return data as VocabularyItem;
+      // Find and return the newly added word
+      const addedWord = this.vocabularySubject.value.find(v => v.id === data.id);
+      return addedWord || null;
     } catch (error) {
       console.error('[Kalaama] Failed to add word:', error);
       return null;
@@ -170,19 +245,21 @@ export class VocabularyService {
    * Update entire word object (including SM-2 spaced repetition fields)
    * This is used by ReviewService to update review results
    */
-  async updateWord(word: VocabularyItem): Promise<void> {
+  async updateWord(word: VocabularyItemWithDictionary): Promise<void> {
     try {
       const { error } = await this.supabase
         .from('vocabulary')
         .update({
           mastery_level: word.mastery_level,
           review_count: word.review_count,
-          last_reviewed_at: word.updated_at || new Date().toISOString(),
+          last_reviewed_at: word.last_reviewed_at || new Date().toISOString(),
+          notes: word.notes,
+          custom_examples: word.custom_examples,
           // SM-2 fields
-          next_review_date: (word as any).next_review_date,
-          ease_factor: (word as any).ease_factor,
-          interval: (word as any).interval,
-          repetitions: (word as any).repetitions,
+          next_review_date: word.next_review_date,
+          ease_factor: word.ease_factor,
+          interval: word.interval,
+          repetitions: word.repetitions,
           updated_at: new Date().toISOString(),
         })
         .eq('id', word.id);
@@ -226,7 +303,34 @@ export class VocabularyService {
   }
 
   /**
-   * Update word with AI examples (Supabase)
+   * Update user's personal notes for a word
+   */
+  async updateNotes(wordId: string, notes: string): Promise<void> {
+    try {
+      const { error } = await this.supabase
+        .from('vocabulary')
+        .update({
+          notes,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', wordId);
+
+      if (error) throw error;
+
+      // Update local cache
+      const currentVocab = this.vocabularySubject.value;
+      const index = currentVocab.findIndex(v => v.id === wordId);
+      if (index >= 0) {
+        currentVocab[index].notes = notes;
+        this.vocabularySubject.next([...currentVocab]);
+      }
+    } catch (error) {
+      console.error('[Kalaama] Failed to update notes:', error);
+    }
+  }
+
+  /**
+   * Update word with AI examples (legacy - for backward compatibility)
    */
   async updateAIExamples(wordId: string, aiExamples: string[]): Promise<void> {
     try {
@@ -264,7 +368,7 @@ export class VocabularyService {
   /**
    * Search vocabulary
    */
-  search(query: string): VocabularyItem[] {
+  search(query: string): VocabularyItemWithDictionary[] {
     const vocabulary = this.vocabularySubject.value;
     const lowerQuery = query.toLowerCase();
     return vocabulary.filter(
@@ -272,5 +376,84 @@ export class VocabularyService {
         v.word.toLowerCase().includes(lowerQuery) ||
         v.translation.toLowerCase().includes(lowerQuery)
     );
+  }
+
+  /**
+   * Internal helper: Join vocabulary items with dictionary data
+   */
+  private async joinWithDictionary(
+    vocabularyItems: VocabularyItem[]
+  ): Promise<VocabularyItemWithDictionary[]> {
+    // Separate dictionary-linked words from legacy words
+    const dictionaryLinkedWords = vocabularyItems.filter(v => v.dictionary_id);
+    const legacyWords = vocabularyItems.filter(v => !v.dictionary_id);
+
+    // Batch fetch dictionary entries
+    const dictionaryIds = dictionaryLinkedWords.map(v => v.dictionary_id!);
+    const dictionaryEntries = dictionaryIds.length > 0
+      ? await this.dictionaryService.getDictionaryEntries(dictionaryIds)
+      : [];
+
+    // Create a map for quick lookup
+    const dictionaryMap = new Map<string, DictionaryWord>();
+    dictionaryEntries.forEach(entry => {
+      dictionaryMap.set(entry.id, entry);
+    });
+
+    // Merge vocabulary with dictionary data
+    const enrichedWords: VocabularyItemWithDictionary[] = [];
+
+    // Process dictionary-linked words
+    for (const vocabItem of dictionaryLinkedWords) {
+      const dictEntry = dictionaryMap.get(vocabItem.dictionary_id!);
+
+      if (dictEntry) {
+        enrichedWords.push({
+          ...vocabItem,
+          word: dictEntry.word,
+          translation: dictEntry.french_translation,
+          definition: dictEntry.french_definition,
+          part_of_speech: dictEntry.part_of_speech,
+          examples: dictEntry.examples,
+          pronunciation: dictEntry.pronunciation_ipa,
+          synonyms: dictEntry.synonyms,
+          antonyms: dictEntry.antonyms,
+          collocations: dictEntry.collocations,
+          difficulty_level: dictEntry.difficulty_level,
+          article: dictEntry.article,
+          gender: dictEntry.gender,
+          plural_form: dictEntry.plural_form,
+          conjugation_hint: dictEntry.conjugation_hint,
+        });
+      } else {
+        // Dictionary entry not found - use legacy data
+        enrichedWords.push({
+          ...vocabItem,
+          word: vocabItem.word || '',
+          translation: vocabItem.translation || '',
+          definition: vocabItem.definition || '',
+          part_of_speech: vocabItem.part_of_speech || '',
+          examples: [],
+        });
+      }
+    }
+
+    // Process legacy words (no dictionary_id)
+    for (const vocabItem of legacyWords) {
+      enrichedWords.push({
+        ...vocabItem,
+        word: vocabItem.word || '',
+        translation: vocabItem.translation || '',
+        definition: vocabItem.definition || '',
+        part_of_speech: vocabItem.part_of_speech || '',
+        examples: vocabItem.examples?.map(ex => ({
+          german: ex,
+          french: '',
+          level: 'A1' as const
+        })) || [],
+      });
+    }
+
+    return enrichedWords;
   }
 }
