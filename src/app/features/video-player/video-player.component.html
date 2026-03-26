@@ -1,0 +1,191 @@
+<div class="video-player-container">
+  <!-- Error Message -->
+  <div *ngIf="hasError" class="error-message">
+    <p>{{ errorMessage }}</p>
+    <button (click)="hasError = false" class="close-error">✕</button>
+  </div>
+
+  <!-- Upload Section -->
+  <div *ngIf="!videoLoaded" class="upload-section">
+    <div class="upload-header">
+      <h2>Custom Video Player</h2>
+      <p>Upload your own video and subtitle files to practice language learning</p>
+    </div>
+
+    <div
+      class="file-dropzone"
+      (drop)="onDrop($event)"
+      (dragover)="onDragOver($event)"
+    >
+      <!-- Video Upload -->
+      <div class="upload-box">
+        <div class="upload-icon">🎥</div>
+        <input
+          type="file"
+          #videoInput
+          accept="video/*"
+          (change)="onVideoSelect($event)"
+          hidden
+        >
+        <button (click)="videoInput.click()" class="select-file-btn">
+          Choose Video File
+        </button>
+        <p *ngIf="videoFile" class="file-name">{{ videoFile.name }}</p>
+        <p *ngIf="!videoFile" class="file-hint">or drag and drop here</p>
+      </div>
+
+      <!-- Subtitle Upload -->
+      <div class="upload-box">
+        <div class="upload-icon">📝</div>
+        <input
+          type="file"
+          #subtitleInput
+          accept=".srt,.vtt,.ass,.ssa"
+          (change)="onSubtitleSelect($event)"
+          hidden
+        >
+        <button (click)="subtitleInput.click()" class="select-file-btn">
+          Choose Subtitle File (Optional)
+        </button>
+        <p *ngIf="subtitleFile" class="file-name">{{ subtitleFile.name }}</p>
+        <p *ngIf="!subtitleFile" class="file-hint">Supports SRT, VTT, ASS formats</p>
+      </div>
+
+      <button
+        (click)="loadVideo()"
+        [disabled]="!videoFile"
+        class="load-button"
+      >
+        Load Video
+      </button>
+    </div>
+  </div>
+
+  <!-- Player Section -->
+  <div *ngIf="videoLoaded" class="player-section">
+    <!-- Video Player -->
+    <div class="video-wrapper">
+      <video
+        #videoPlayer
+        [src]="videoUrl"
+        controls
+        class="video-element"
+      ></video>
+    </div>
+
+    <!-- Caption Display -->
+    <div class="caption-display" *ngIf="currentCaption">
+      <p class="caption-text">
+        <span
+          *ngFor="let word of currentCue?.words"
+          class="caption-word"
+          (click)="onWordClick(word.word)"
+        >
+          {{ word.word }}
+        </span>
+      </p>
+    </div>
+
+    <div class="no-caption" *ngIf="!currentCaption && subtitleCues.length > 0">
+      <p>No caption at current time</p>
+    </div>
+
+    <div class="no-caption" *ngIf="subtitleCues.length === 0">
+      <p>No subtitles loaded. Video playing without captions.</p>
+    </div>
+
+    <!-- Learning Controls -->
+    <div class="controls-section">
+      <div class="control-group">
+        <button
+          (click)="toggleLoop()"
+          [class.active]="loopSegment"
+          [disabled]="!currentCue"
+          class="control-btn"
+        >
+          <span class="icon">🔁</span>
+          {{ loopSegment ? 'Stop Loop' : 'Loop Segment' }}
+        </button>
+
+        <button
+          (click)="toggleAutoPause()"
+          [class.active]="autoPauseEnabled"
+          class="control-btn"
+        >
+          <span class="icon">⏸️</span>
+          Auto-Pause: {{ autoPauseEnabled ? 'ON' : 'OFF' }}
+        </button>
+
+        <div class="speed-control">
+          <label for="speed">Speed:</label>
+          <select
+            id="speed"
+            (change)="changeSpeed($event)"
+            [value]="playbackSpeed"
+          >
+            <option value="0.5">0.5x</option>
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </div>
+
+        <button (click)="resetPlayer()" class="control-btn reset-btn">
+          <span class="icon">🔄</span>
+          Load New Video
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Translation Modal -->
+  <div *ngIf="showTranslationModal" class="modal-overlay" (click)="closeTranslationModal()">
+    <div class="modal-content" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <h3>{{ selectedWord }}</h3>
+        <button (click)="closeTranslationModal()" class="close-btn">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div *ngIf="loadingTranslation" class="loading">
+          Loading translation...
+        </div>
+
+        <div *ngIf="!loadingTranslation && !translationError">
+          <p class="translation">{{ translation }}</p>
+
+          <!-- Dictionary Entry (if found) -->
+          <div *ngIf="currentDictionaryEntry" class="dictionary-details">
+            <p class="definition">{{ currentDictionaryEntry.french_definition }}</p>
+
+            <div *ngIf="currentDictionaryEntry.french_explanation" class="explanation">
+              <strong>💡 Tip:</strong> {{ currentDictionaryEntry.french_explanation }}
+            </div>
+
+            <div *ngIf="currentDictionaryEntry?.examples?.length && currentDictionaryEntry.examples.length > 0" class="examples">
+              <h4>Examples:</h4>
+              <ul>
+                <li *ngFor="let example of currentDictionaryEntry.examples.slice(0, 3)">
+                  <strong>{{ example.german }}</strong>
+                  <br>
+                  <em>{{ example.french }}</em>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="translationError" class="error">
+          {{ translationError }}
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button (click)="saveWord()" class="save-btn">Save to Vocabulary</button>
+        <button (click)="closeTranslationModal()" class="cancel-btn">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -65,6 +65,13 @@ export const routes: Routes = [
       ),
   },
   {
+    path: 'video-player',
+    loadComponent: () =>
+      import('./features/video-player/video-player.component').then(
+        (m) => m.VideoPlayerComponent
+      ),
+  },
+  {
     path: '**',
     redirectTo: '',
   },
